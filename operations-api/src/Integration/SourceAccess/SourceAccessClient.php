@@ -43,8 +43,10 @@ final readonly class SourceAccessClient
     /** YD SOFT 2.22.0 (API 2.48.0, owner decision 2026-10-27): the shop's own check and record of an order of 22–26 October
      *  taken into Confirmare by the backfill (ConfirmareBackfill); reviewed: only an adoption record, never an order change. */
     public const ROUTE_ADOPT = '/yd-arasya/v1/confirmare/adopt';
+    /** YD SOFT 2.36.0 (API 2.83.0, Store Workspace V1): several orders of the shop employee in one read (StoreBoard). */
+    public const ROUTE_STORE = '/yd-arasya/v1/confirmare/store';
     public const ROUTES = [self::ROUTE_OPERATION, self::ROUTE_OPERATION_STATUS, self::ROUTE_DETAIL, self::ROUTE_CATALOG, self::ROUTE_PRODUCT, self::ROUTE_PREVIEW, self::ROUTE_APPLY, self::ROUTE_EDIT_STATUS, self::ROUTE_FINANCE, self::ROUTE_FINANCE_ACTION, self::ROUTE_FINANCE_STATUS,
-        self::ROUTE_INVOICE, self::ROUTE_INVOICE_ACTION, self::ROUTE_INVOICE_STATUS, self::ROUTE_INVOICE_PAYMENT, self::ROUTE_PROFORMA_ACTION, self::ROUTE_TRANSFER_EXCEPTIONS, self::ROUTE_TRANSFER_EXCEPTION_ACTION, self::ROUTE_ADOPT];
+        self::ROUTE_INVOICE, self::ROUTE_INVOICE_ACTION, self::ROUTE_INVOICE_STATUS, self::ROUTE_INVOICE_PAYMENT, self::ROUTE_PROFORMA_ACTION, self::ROUTE_TRANSFER_EXCEPTIONS, self::ROUTE_TRANSFER_EXCEPTION_ACTION, self::ROUTE_ADOPT, self::ROUTE_STORE];
 
     /** Shop error codes Operations understands (anything else is SOURCE_ERROR). */
     private const SOURCE_ERRORS = [

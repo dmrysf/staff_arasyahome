@@ -11,6 +11,7 @@ import "../styles/foundation.css";
 import "../styles/experiences.css";
 import "../styles/confirmare.css";
 import "../styles/operatorWorkspace.css";
+import "../styles/storeWorkspace.css";
 import "../styles/awb.css";
 import "../styles/guide.css";
 import "../styles/motion.css";

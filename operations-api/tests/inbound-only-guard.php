@@ -84,7 +84,11 @@ $accessRoutes = ['/yd-arasya/v1/confirmare/detail', '/yd-arasya/v1/confirmare/ca
     '/yd-arasya/v1/confirmare/operation', '/yd-arasya/v1/confirmare/operation-status',
     // API 2.48.0 (YD SOFT 2.22.0): the adoption of an order of 22–26 October by the backfill; reviewed: the shop checks the order
     // and writes only its adoption record (and the advance requirement every Confirmare COD order has), never an order change.
-    '/yd-arasya/v1/confirmare/adopt'];
+    '/yd-arasya/v1/confirmare/adopt',
+    // API 2.83.0 (YD SOFT 2.36.0, Store Workspace V1): the shop employee's read of up to 50 orders at once (rows), one order's
+    // products and delivery (detail) and the shop's own order search (numbers only); reviewed: read only, nothing written
+    // except the shop's access audit row. The AWB cancellation and the delivery address go through the reviewed operation route.
+    '/yd-arasya/v1/confirmare/store'];
 $forbiddenApi = [
     '/\bcurl_(init|exec|multi_\w+|setopt)\s*\(/' => 'cURL client',
     '/\b(fsockopen|pfsockopen|stream_socket_client)\s*\(/' => 'raw socket client',

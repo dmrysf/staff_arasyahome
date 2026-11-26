@@ -57,9 +57,21 @@ export interface BankChecks { items: BankCheck[]; waiting: Record<string, number
 export interface ShopAwb {
   state: "none" | "created" | "unknown"; number: string | null; createdAt: string | null; delivered: boolean; cod: string | null;
   codCheck: { state: string; awbCod: string | null; expected: string | null; corrected: boolean } | null; blockers: string[]; address: { kind: "task" | "done"; at: string | null }[]; pickup: "not_tracked";
+  /** Staff 2.59.0 (API 2.83.0): FAN Courier's latest status text and the latest AWB correction made from Staff (absent from older APIs). */
+  status?: string | null; statusId?: string | null;
+  correction?: AwbCorrection;
 }
+/** Staff 2.59.0: the latest AWB correction (cancellation at FAN Courier) of the order. */
+export interface AwbCorrection { state: "none" | "cancelled" | "uncertain" | "not_cancelled"; awb: string | null; at: string | null; reason: string | null }
+/** Staff 2.59.0: the delivery block the AWB uses (the shop's read, never stored in Arasya). */
+export interface DeliveryAddress {
+  target: "shipping" | "billing"; firstName: string; lastName: string; company: string; phone: string; county: string; city: string; street: string; streetNo: string;
+  building: string; entrance: string; floor: string; apartment: string; postcode: string; note: string;
+}
+export interface DeliveryCheck { state: "ok" | "warning" | "attention"; issues: string[]; warnings: string[]; fan: { county: string; locality: string } | null }
+export interface DeliveryView { address: DeliveryAddress; check: DeliveryCheck; editable: boolean; lastEdit: { at: string | null } | null }
 export interface ShopCardRefund { available: boolean; transactions: number; requests: { state: "manual_required" | "completed" | "unknown"; at: string | null; amount: string | null; transactions: number; verified: number; completedAt: string | null; mailed: boolean }[] }
-export interface ShopOperations { features: { reactivation?: string; awb?: string; cardRefunds?: string }; orderStatus: string | null; awb: ShopAwb; cardRefund: ShopCardRefund }
+export interface ShopOperations { features: { reactivation?: string; awb?: string; cardRefunds?: string; awbCorrection?: string; addressEdit?: string }; orderStatus: string | null; awb: ShopAwb; cardRefund: ShopCardRefund; delivery?: DeliveryView | null }
 export interface Reactivation { sequence: number; kind: "ordinary" | "paid_exception"; reason: ReactivationReason; state: string; by: string; at: string; completedAt: string | null }
 /**
  * Staff 2.52.1 (API 2.74.1): an operation of the order still waiting for the shop's answer. It blocks the next one of its
@@ -68,7 +80,7 @@ export interface Reactivation { sequence: number; kind: "ordinary" | "paid_excep
 export interface OpenOperation { path: OperationPath; state: "pending" | "unknown"; at: string; mine: boolean; idempotencyKey: string | null }
 export interface OperationsState {
   available: boolean; shop: ShopOperations | null; stage: string; awbStage: boolean;
-  allowed: { reactivate: boolean; awb: boolean; cardRefund: boolean; cardRefundRecord: boolean; cardRefundVerify: boolean };
+  allowed: { reactivate: boolean; awb: boolean; cardRefund: boolean; cardRefundRecord: boolean; cardRefundVerify: boolean; awbCorrect?: boolean; addressEdit?: boolean };
   reactivations: Reactivation[];
   open: OpenOperation[];
 }
@@ -84,7 +96,7 @@ export interface HealthMetrics { generatedAt: string; sources: Record<string, He
 /** What a recorded "no answer" did to the proforma cycle (API 2.46.0): started (the cycle state) or why not. */
 export interface ContactCycle { started: boolean; state: string | null; reason: string | null }
 
-export type OperationPath = "reactivate" | "awb" | "awb/address" | "awb/cod-corrected" | "card-refund" | "card-refund/record" | "card-refund/verify";
+export type OperationPath = "reactivate" | "awb" | "awb/address" | "awb/cod-corrected" | "awb/cancel" | "delivery-address" | "card-refund" | "card-refund/record" | "card-refund/verify";
 
 export interface ConfirmareOpsApi {
   cycleAttention(source: string | null, signal?: AbortSignal): Promise<CycleAttentionItem[]>;
@@ -247,18 +259,44 @@ export function mapShopOperations(value: unknown): ShopOperations {
   const check = awb.codCheck == null ? null : obj(awb.codCheck);
   const features = record(raw.features ?? {});
   return {
-    features: Object.fromEntries((["reactivation", "awb", "cardRefunds"] as const).filter((name) => features[name] != null).map((name) => [name, str(features[name], 10)])),
+    features: Object.fromEntries((["reactivation", "awb", "cardRefunds", "awbCorrection", "addressEdit"] as const).filter((name) => features[name] != null).map((name) => [name, str(features[name], 10)])),
     orderStatus: optStr(raw.orderStatus, 30),
     awb: {
       state: oneOf(awb.state, ["none", "created", "unknown"] as const), number: optStr(awb.number, 20), createdAt: instant(awb.createdAt), delivered: bool(awb.delivered), cod: money(awb.cod),
       codCheck: check === null ? null : { state: str(check.state, 20), awbCod: money(check.awbCod), expected: money(check.expected), corrected: check.corrected == null ? false : bool(check.corrected) },
       blockers: list(awb.blockers, 30, (entry) => code(entry) ?? fail()), address: list(awb.address, 10, (entry) => { const a = obj(entry); return { kind: oneOf(a.kind, ["task", "done"] as const), at: instant(a.at) }; }),
       pickup: "not_tracked",
+      ...(awb.status === undefined ? {} : { status: optStr(awb.status, 200) }),
+      ...(awb.statusId === undefined ? {} : { statusId: optStr(awb.statusId, 10) }),
+      ...(awb.correction == null ? {} : { correction: mapAwbCorrection(awb.correction) }),
     },
+    ...(raw.delivery === undefined ? {} : { delivery: raw.delivery === null ? null : mapDeliveryView(raw.delivery) }),
     cardRefund: {
       available: bool(refund.available), transactions: int(refund.transactions),
       requests: list(refund.requests, 10, (entry) => { const r = obj(entry); return { state: oneOf(r.state, ["manual_required", "completed", "unknown"] as const), at: instant(r.at), amount: money(r.amount), transactions: int(r.transactions), verified: r.verified == null ? 0 : int(r.verified), completedAt: instant(r.completedAt), mailed: bool(r.mailed) }; }),
     },
+  };
+}
+
+export function mapAwbCorrection(value: unknown): AwbCorrection {
+  const c = obj(value);
+  return { state: oneOf(c.state, ["none", "cancelled", "uncertain", "not_cancelled"] as const), awb: optStr(c.awb, 20), at: instant(c.at), reason: code(c.reason) };
+}
+
+const ADDRESS_KEYS = ["firstName", "lastName", "company", "phone", "county", "city", "street", "streetNo", "building", "entrance", "floor", "apartment", "postcode", "note"] as const;
+
+export function mapDeliveryView(value: unknown): DeliveryView {
+  const raw = obj(value);
+  const a = obj(raw.address);
+  const check = obj(raw.check);
+  const address = Object.fromEntries(ADDRESS_KEYS.map((key) => [key, a[key] == null ? "" : str(a[key], 200)])) as Omit<DeliveryAddress, "target">;
+  const fan = check.fan == null ? null : obj(check.fan);
+  return {
+    address: { target: a.target === "billing" ? "billing" : "shipping", ...address },
+    check: { state: oneOf(check.state, ["ok", "warning", "attention"] as const), issues: list(check.issues, 20, (entry) => code(entry) ?? fail()), warnings: list(check.warnings, 20, (entry) => code(entry) ?? fail()),
+      fan: fan === null ? null : { county: str(fan.county, 60), locality: str(fan.locality, 120) } },
+    editable: bool(raw.editable),
+    lastEdit: raw.lastEdit == null ? null : { at: instant(obj(raw.lastEdit).at) },
   };
 }
 
@@ -267,7 +305,8 @@ export function mapOperationsState(value: unknown): OperationsState {
   const allowed = obj(raw.allowed);
   return {
     available: bool(raw.available), shop: raw.shop == null ? null : mapShopOperations(raw.shop), stage: str(raw.stage, 100), awbStage: bool(raw.awbStage),
-    allowed: { reactivate: bool(allowed.reactivate), awb: bool(allowed.awb), cardRefund: bool(allowed.cardRefund), cardRefundRecord: bool(allowed.cardRefundRecord), cardRefundVerify: bool(allowed.cardRefundVerify) },
+    allowed: { reactivate: bool(allowed.reactivate), awb: bool(allowed.awb), cardRefund: bool(allowed.cardRefund), cardRefundRecord: bool(allowed.cardRefundRecord), cardRefundVerify: bool(allowed.cardRefundVerify),
+      ...(allowed.awbCorrect === undefined ? {} : { awbCorrect: bool(allowed.awbCorrect) }), ...(allowed.addressEdit === undefined ? {} : { addressEdit: bool(allowed.addressEdit) }) },
     reactivations: list(raw.reactivations, 20, (entry) => {
       const r = obj(entry);
       return { sequence: int(r.sequence), kind: oneOf(r.kind, ["ordinary", "paid_exception"] as const), reason: oneOf(r.reason, REACTIVATION_REASONS), state: str(r.state, 20), by: str(r.by), at: instant(r.at) ?? fail(), completedAt: instant(r.completedAt) };
@@ -283,9 +322,9 @@ export function mapOperationsState(value: unknown): OperationsState {
 }
 
 /** The API's operation kinds (ConfirmareOperations::FIELDS) and the Staff action each belongs to. */
-export const OPERATION_KINDS = ["order_reactivate", "awb_create", "awb_address_task", "awb_address_done", "awb_cod_corrected", "card_refund_full", "card_refund_record", "card_refund_verify"] as const;
+export const OPERATION_KINDS = ["order_reactivate", "awb_create", "awb_address_task", "awb_address_done", "awb_cod_corrected", "awb_cancel", "address_update", "card_refund_full", "card_refund_record", "card_refund_verify"] as const;
 const OPERATION_KIND_PATHS: Record<(typeof OPERATION_KINDS)[number], OperationPath> = {
-  order_reactivate: "reactivate", awb_create: "awb", awb_address_task: "awb/address", awb_address_done: "awb/address", awb_cod_corrected: "awb/cod-corrected",
+  order_reactivate: "reactivate", awb_create: "awb", awb_address_task: "awb/address", awb_address_done: "awb/address", awb_cod_corrected: "awb/cod-corrected", awb_cancel: "awb/cancel", address_update: "delivery-address",
   card_refund_full: "card-refund", card_refund_record: "card-refund/record", card_refund_verify: "card-refund/verify",
 };
 

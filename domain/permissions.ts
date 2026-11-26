@@ -1,3 +1,4 @@
+import { canUseStoreWorkspace } from "./storeWorkspace";
 import type { Employee } from "./models";
 import { canHandOff, canOpenConfirmareOrder, canSuperviseConfirmare, canUseAdvanceQueue, canUseConfirmare } from "./confirmare";
 import { canUseShopTasks, canWatchHealth } from "./confirmareOps";
@@ -34,6 +35,8 @@ export function canAccessRoute(employee: Employee, path: string) {
   if (path === "/authority") return employee.permissions.includes("production.manage_authority") && employee.applications.includes("dashboard");
   // Staff 2.47.0: the Trendyol AWB print station, for AWB permission holders (the dedicated station account or a named employee).
   if (path === "/awb") return canUseAwbStation(employee);
+  // Staff 2.59.0: the Store Workspace of the shop employees (an invoice scope of a shop).
+  if (path === "/magazin" || path.startsWith("/magazin/")) return canUseStoreWorkspace(employee);
   // Trendyol workspace: only explicitly authorized Trendyol personnel (Staff access plus the Trendyol view permission).
   if (path === "/trendyol" || path.startsWith("/trendyol/")) return employee.permissions.includes("trendyol.orders.view") && employee.applications.includes("staff");
   // Confirmare (API 2.39.0): only identities holding a Confirmare scope; the team view only for supervisors.

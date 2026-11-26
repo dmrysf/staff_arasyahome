@@ -1,5 +1,6 @@
 export type StaffRoute =
-  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight" | "awb"; pathname: string }
+  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight" | "awb" | "store-home" | "store-documents" | "store-awb" | "store-search" | "store-mine"; pathname: string }
+  | { kind: "store-order"; pathname: string; orderId: string }
   | { kind: "confirmare-order"; pathname: string; orderId: string }
   | { kind: "finance-task" | "finance-task-detail" | "finance-task-done" | "finance-oversight-detail"; pathname: string; requestId: string }
   | { kind: "finance-order"; pathname: string; orderId: string }
@@ -10,7 +11,7 @@ export type StaffRoute =
   | { kind: "document-detail"; pathname: string; orderId: string }
   | { kind: "invalid"; pathname: "/" };
 
-const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight" | "awb">([
+const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight" | "awb" | "store-home" | "store-documents" | "store-awb" | "store-search" | "store-mine">([
   ["/", "home"],
   ["/login", "login"],
   ["/scan", "scan"],
@@ -30,6 +31,12 @@ const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "hist
   ["/confirmare/health", "confirmare-health"],
   ["/confirmare/finance/requests", "finance-inbox"],
   ["/confirmare/finance/oversight", "finance-oversight"],
+  // Staff 2.59.0: the shop employee's Store Workspace.
+  ["/magazin", "store-home"],
+  ["/magazin/documente", "store-documents"],
+  ["/magazin/awb", "store-awb"],
+  ["/magazin/cauta", "store-search"],
+  ["/magazin/istoric", "store-mine"],
 ]);
 
 const ORDER_PREFIX = "/orders/";
@@ -37,6 +44,7 @@ const CONFIRMARE_ORDER_PREFIX = "/confirmare/orders/";
 const FINANCE_ORDER_PREFIX = "/confirmare/finance/orders/";
 const FINANCE_LEGACY_PREFIX = "/confirmare/finance/legacy/";
 const DOCUMENT_PREFIX = "/documents/";
+const STORE_ORDER_PREFIX = "/magazin/comenzi/";
 const MAX_ENCODED_ORDER_ID_LENGTH = 768;
 const MAX_ORDER_ID_LENGTH = 256;
 
@@ -69,6 +77,10 @@ export function parseStaffRoute(pathname: string): StaffRoute {
   // Staff 2.55.0: a closed task, read-only, with its payments ("Adaugă o plată", "Corectează plata").
   const financeDone = /^\/confirmare\/finance\/requests\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/done$/.exec(pathname);
   if (financeDone) return { kind: "finance-task-done", pathname, requestId: financeDone[1] };
+  if (pathname.startsWith(STORE_ORDER_PREFIX)) {
+    const id = decodeOrderId(pathname.slice(STORE_ORDER_PREFIX.length));
+    return id !== null && /^(trendhome|outletperdele):[A-Za-z0-9._-]{1,128}$/.test(id) ? { kind: "store-order", pathname, orderId: id } : { kind: "invalid", pathname: "/" };
+  }
   if (pathname.startsWith(FINANCE_ORDER_PREFIX)) {
     const id = decodeOrderId(pathname.slice(FINANCE_ORDER_PREFIX.length));
     return id !== null && /^(trendhome|outletperdele):[A-Za-z0-9._-]{1,128}$/.test(id) ? { kind: "finance-order", pathname, orderId: id } : { kind: "invalid", pathname: "/" };

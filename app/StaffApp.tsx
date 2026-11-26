@@ -47,6 +47,11 @@ import { ConfirmareAwbScreen, ConfirmareEfacturaScreen, ConfirmareHealthScreen }
 import { GuideProvider } from "../features/guide/ContextualHelp";
 import { AwbStationScreen } from "../features/awb/AwbStationScreen";
 import { canPrintAwb, isAwbStationOnly } from "../domain/awb";
+import { opensStoreWorkspace } from "../domain/storeWorkspace";
+import { StoreHome } from "../features/store/StoreHome";
+import { StoreDocuments } from "../features/store/StoreDocuments";
+import { StoreAwb } from "../features/store/StoreAwb";
+import { StoreMine, StoreOrderScreen, StoreSearch } from "../features/store/StoreOrders";
 
 type StaffAppProps = { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string };
 
@@ -125,6 +130,9 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const deskHome = Boolean(session && services.confirmare && opensOperatorDesk(session.employee, homeWorkspace(session.employee, services)));
   // Staff 2.52.5: a finance employee without a desk or a production stage opens on their finance tasks.
   const financeHome = Boolean(session && services.confirmare && !deskHome && opensFinanceInbox(session.employee, homeWorkspace(session.employee, services)));
+  // Staff 2.59.0 (Store Workspace V1): a shop employee who is not a Confirmare operator opens on the Store Workspace
+  // (`?clasic=1` keeps the earlier home during the transition).
+  const storeHome = Boolean(session && services.store && services.confirmare && !deskHome && !financeHome && opensStoreWorkspace(session.employee, deskHome, window.location.search));
   // The guide explains the screen actually shown (a refused route shows the home screen).
   const guideRoute = useMemo(() => parseStaffRoute(guardedRoute === "/" && deskHome ? "/confirmare" : guardedRoute === "/" && financeHome ? "/confirmare/finance/requests" : guardedRoute), [guardedRoute, deskHome, financeHome]);
   const staffReady = Boolean(session && !session.employee.mustChangePassword && session.employee.applications.includes("staff"));
@@ -175,6 +183,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const financeRequestId = (parsedRoute.kind === "finance-task" || parsedRoute.kind === "finance-task-detail" || parsedRoute.kind === "finance-task-done" || parsedRoute.kind === "finance-oversight-detail") && guardedRoute === parsedRoute.pathname ? parsedRoute.requestId : "";
   const financeOrderId = parsedRoute.kind === "finance-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const financeLegacyId = parsedRoute.kind === "finance-legacy" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
+  const storeOrderId = parsedRoute.kind === "store-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const workspaces = resolveWorkspaces(session.employee, workspaceAvailability(services));
   const chooseWorkspace = (workspace: Workspace) => { saveWorkspacePreference(session.employee.employeeUuid, workspace.id); navigate("/"); };
   // Staff 2.47.0: the Trendyol AWB station is its own full screen, without the Staff navigation. A dedicated station
@@ -192,6 +201,12 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
   if (guardedRoute === "/" && deskHome && services.confirmare) screen = desk(services.confirmare, null);
   else if (guardedRoute === "/" && financeHome && services.confirmare) screen = <FinanceDeskScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if ((guardedRoute === "/" && storeHome || guardedRoute === "/magazin") && services.store) screen = <StoreHome employee={session.employee} store={services.store} navigate={navigate} />;
+  else if (guardedRoute === "/magazin/documente" && services.store && services.documents) screen = <StoreDocuments store={services.store} documents={services.documents} ops={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/magazin/awb" && services.store && services.confirmare) screen = <StoreAwb store={services.store} ops={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/magazin/cauta" && services.store) screen = <StoreSearch store={services.store} navigate={navigate} />;
+  else if (guardedRoute === "/magazin/istoric" && services.store) screen = <StoreMine store={services.store} navigate={navigate} />;
+  else if (storeOrderId && services.store) screen = <StoreOrderScreen key={storeOrderId} store={services.store} orderId={storeOrderId} navigate={navigate} />;
   else if (guardedRoute === "/scan") {
     // A request's "open the scanner" passes only the request id; the scanned code itself never enters a URL.
     const scanContext = new URLSearchParams(window.location.search).get("exception");
