@@ -251,6 +251,52 @@ $refused = $ok($get($opA, '/confirmare/pool', ['view' => 'refused']), 'desk refu
 $confirmed = $ok($get($opA, '/confirmare/pool', ['view' => 'confirmed']), 'desk confirmed');
 $check($refused['counts']['refused'] === 2 && $confirmed['counts']['confirmed'] === 2 && $confirmed['counts']['doneToday'] === 4 && array_column($refused['items'], 'globalOrderId') === [$g5, $g4], 'the decided lists and today\'s count: ' . json_encode($confirmed['counts']));
 
+// ---- 8b. API 2.82.1: the refused order's shop cancellation is handed to the shop once the gates open -----------------------
+$syncOp = static fn (string $g): array => $all('SELECT s.* FROM order_cancellation_sync_operations s INNER JOIN operational_orders o ON o.order_uuid = s.order_uuid WHERE o.global_order_id = ? ORDER BY s.created_at', [$g]);
+$op4 = $syncOp($g4);
+$check(count($op4) === 1 && $op4[0]['mechanism'] === 'manual' && $op4[0]['state'] === 'manual_review' && $op4[0]['last_error_code'] === 'CANCELLATION_SYNC_INACTIVE',
+    'with the gates closed the request waits as CANCELLATION_SYNC_INACTIVE, never PROVIDER_UNSUPPORTED: ' . json_encode($op4));
+$closed = $container->cancellationSyncService()->rearmInactive('cd-rearm-closed');
+$check($closed['active'] === [] && $closed['seen'] === 0 && $syncOp($g4)[0]['state'] === 'manual_review', 'gates closed: the rearm does nothing');
+$syncContainer = new Container(new \Arasya\Operations\Config\Config(...[...(array) $config, 'cancellationSync' => 'enabled']), $pdo);
+$flagsBefore = $all("SELECT flag_key, enabled FROM production_feature_flags WHERE flag_key IN ('cancellation_sync_trendhome', 'cancellation_sync_outletperdele')");
+$pdo->exec("UPDATE production_feature_flags SET enabled = 0 WHERE flag_key IN ('cancellation_sync_trendhome', 'cancellation_sync_outletperdele')");
+$onlySwitch = $syncContainer->cancellationSyncService()->rearmInactive('cd-rearm-switch');
+$check($onlySwitch['active'] === [] && $syncOp($g4)[0]['state'] === 'manual_review', 'the server switch alone opens nothing (the shop flag is the second gate)');
+$pdo->exec("UPDATE production_feature_flags SET enabled = 1 WHERE flag_key = 'cancellation_sync_trendhome'");
+$financial = $all('SELECT source_financial_state, source_financial_basis FROM operational_orders WHERE global_order_id = ?', [$g4])[0];
+// Money that arrived after the red decision keeps the request with a person: nothing is handed to the shop.
+$pdo->prepare("UPDATE operational_orders SET source_financial_state = 'cleared', source_financial_basis = 'advance_collected' WHERE global_order_id = ?")->execute([$g4]);
+$kept = $syncContainer->cancellationSyncService()->rearmInactive('cd-rearm-money');
+$keptAgain = $syncContainer->cancellationSyncService()->rearmInactive('cd-rearm-money-2');
+$notes = (int) $one("SELECT COUNT(*) FROM order_cancellation_sync_attempts WHERE operation_uuid = ? AND outcome = 'rearm_kept_money_received'", [$op4[0]['operation_uuid']]);
+$check($kept['active'] === ['trendhome'] && ($kept['kept']['money_received'] ?? 0) >= 1 && ($keptAgain['kept']['money_received'] ?? 0) >= 1 && $notes === 1
+    && $syncOp($g4)[0]['state'] === 'manual_review' && $syncOp($g4)[0]['mechanism'] === 'manual', 'money received since the decision: kept for a person, noted once: ' . json_encode([$kept, $notes]));
+$pdo->prepare('UPDATE operational_orders SET source_financial_state = ?, source_financial_basis = ? WHERE global_order_id = ?')->execute([$financial['source_financial_state'], $financial['source_financial_basis'], $g4]);
+// An expired proforma's request recorded while the gates were closed is never handed over in bulk: only refusals are.
+$pdo->prepare('UPDATE order_cancellation_sync_operations SET note = ? WHERE operation_uuid = ?')->execute(['Proforma de avans expirată fără plată (Confirmare).', $op4[0]['operation_uuid']]);
+$expiryRun = $syncContainer->cancellationSyncService()->rearmInactive('cd-rearm-expiry');
+$check($syncOp($g4)[0]['state'] === 'manual_review' && $syncOp($g4)[0]['mechanism'] === 'manual',
+    'an expired proforma\'s waiting request stays with a person when the gates open: ' . json_encode($expiryRun));
+$pdo->prepare('UPDATE order_cancellation_sync_operations SET note = ? WHERE operation_uuid = ?')->execute([\Arasya\Operations\Cancellation\Sync\CancellationSyncService::REFUSAL_NOTE, $op4[0]['operation_uuid']]);
+$rearmed = $syncContainer->cancellationSyncService()->rearmInactive('cd-rearm-open');
+$after4 = $syncOp($g4);
+$check($rearmed['rearmed'] >= 1 && count($after4) === 1 && $after4[0]['operation_uuid'] === $op4[0]['operation_uuid'] && $after4[0]['state'] === 'awaiting_pickup'
+    && $after4[0]['mechanism'] === 'source_pull' && $after4[0]['last_error_code'] === null && (int) $after4[0]['attempt_count'] === 0,
+    'gates open: the same request is handed to the shop (awaiting_pickup, source_pull), no second operation: ' . json_encode([$rearmed, $after4]));
+$check($syncContainer->cancellationSyncService()->rearmInactive('cd-rearm-again')['seen'] === 0, 'a second run finds nothing to hand over');
+$pulled = $syncContainer->cancellationSyncService()->pull('trendhome', 'cd-pull');
+$check($pulled['enabled'] === true && in_array($op4[0]['operation_uuid'], array_column($pulled['operations'], 'operationId'), true), 'the shop pulls the refused order\'s request');
+$check((int) $one("SELECT COUNT(*) FROM order_cancellation_sync_operations s INNER JOIN operational_orders o ON o.order_uuid = s.order_uuid WHERE o.global_order_id = ?", [$g5]) === 0,
+    'the refused order with money still has no cancellation request');
+// An expired proforma never stops an order whose money arrived (the refusal's guards also guard the expiry).
+$uuid5 = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$g5]);
+$actor5 = (string) $one('SELECT employee_uuid FROM employees ORDER BY created_at LIMIT 1');
+$expired5 = $syncContainer->cancellationSyncService()->requestForExpiredProforma($uuid5, $actor5, 'cd-expiry-money', 'cd-expiry-money-key');
+$check($expired5['state'] === 'money_received' && (int) $one('SELECT COUNT(*) FROM order_cancellation_controls WHERE order_uuid = ?', [$uuid5]) === 0,
+    'an expired proforma of an order with money: nothing is stopped or asked from the shop: ' . json_encode($expired5));
+foreach ($flagsBefore as $flagRow) $pdo->prepare('UPDATE production_feature_flags SET enabled = ? WHERE flag_key = ?')->execute([(int) $flagRow['enabled'], $flagRow['flag_key']]);
+
 // ---- 9. The three-unanswered-calls rule is retired ------------------------------------------------------------------------
 $g6 = $th(6);
 $ok($act($opA, $g6, 'claim', ['expectedVersion' => $version($g6)]), 'A takes order 6');

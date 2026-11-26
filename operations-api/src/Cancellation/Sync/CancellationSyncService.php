@@ -51,6 +51,13 @@ final readonly class CancellationSyncService
     private const PULL_LIMIT = 20;
     /** The shop's financial attentions that mean a finance entry is not decided yet, or the money state is not known. */
     private const FINANCE_OPEN_ATTENTIONS = ['transfer_pending', 'refund_pending', 'reconciliation_required'];
+    /** API 2.82.1: the error of a system-triggered request created while the source's cancellation gates were closed. */
+    public const INACTIVE_ERROR = 'CANCELLATION_SYNC_INACTIVE';
+    /** The errors under which such a request was recorded: API 2.82.0 named it PROVIDER_UNSUPPORTED. */
+    private const INACTIVE_ERRORS = ['CANCELLATION_SYNC_INACTIVE', 'PROVIDER_UNSUPPORTED'];
+    private const REARM_LIMIT = 50;
+    /** The note of a refused order's cancellation request: rearmInactive() takes only these (never an expired proforma's). */
+    public const REFUSAL_NOTE = 'Clientul a refuzat comanda (Confirmare).';
 
     public function __construct(
         private PDO $pdo,
@@ -227,6 +234,12 @@ final readonly class CancellationSyncService
             if ($blocker !== null) {
                 return ['state' => $blocker];
             }
+            // API 2.82.1 (owner decision 2026-11-26): an expired proforma never stops an order with money received or verified,
+            // an issued invoice or production past its first stage either (the refusal's guards); the cycle waits for a person.
+            $blocker = $this->refusalBlocker($orderUuid);
+            if ($blocker !== null) {
+                return ['state' => $blocker];
+            }
             (new CancellationControl($this->pdo, $this->clock))->stopLocally($orderUuid, $actorUuid, 'Proforma de avans a expirat fără plată (120 de ore, verificare bancară înregistrată).', true, $requestId, $key);
             $control = $this->control($orderUuid);
             if ($control === null || $control['hold_status'] !== CancellationControl::HELD) {
@@ -248,13 +261,16 @@ final readonly class CancellationSyncService
             $provider = $this->providers->for($source);
             $external = $this->externalRef($order);
             $mechanism = $provider->mechanism();
-            if ($mechanism !== 'manual' && ($external === null || !$this->providers->active($source))) {
+            // API 2.82.1: a provider that exists but whose gates are closed is named as such (CANCELLATION_SYNC_INACTIVE),
+            // never as an unsupported provider; rearmInactive() hands these operations to the shop once the gates open.
+            $inactive = $mechanism !== 'manual' && $external !== null && !$this->providers->active($source);
+            if ($mechanism !== 'manual' && ($external === null || $inactive)) {
                 $mechanism = 'manual';
             }
             [$state, $error] = match ($mechanism) {
                 'source_pull' => [SyncState::AWAITING_PICKUP, null],
                 'api' => [SyncState::MANUAL_REVIEW, 'REASON_REQUIRED'],
-                default => [SyncState::MANUAL_REVIEW, $provider instanceof ManualProvider ? $provider->reason() : ($external === null ? 'EXTERNAL_ORDER_UNKNOWN' : 'PROVIDER_UNSUPPORTED')],
+                default => [SyncState::MANUAL_REVIEW, $inactive ? self::INACTIVE_ERROR : ($provider instanceof ManualProvider ? $provider->reason() : ($external === null ? 'EXTERNAL_ORDER_UNKNOWN' : 'PROVIDER_UNSUPPORTED'))],
             };
             if ($mechanism === 'api') {
                 $mechanism = 'manual';
@@ -291,25 +307,9 @@ final readonly class CancellationSyncService
             if ($this->financeOpen($order)) {
                 return ['state' => 'finance_open'];
             }
-            $facts = $this->pdo->prepare('SELECT o.source_financial_state, o.source_financial_basis, o.production_stage_id, o.cancellation_state,
-                    (SELECT COALESCE(MAX(a.verified_amount), 0) FROM finance_task_amounts a INNER JOIN finance_verification_requests r ON r.request_uuid = a.request_uuid WHERE r.order_uuid = o.order_uuid) AS verified,
-                    (SELECT COALESCE(MAX(a.received_amount), 0) FROM finance_task_amounts a INNER JOIN finance_verification_requests r ON r.request_uuid = a.request_uuid WHERE r.order_uuid = o.order_uuid) AS received
-                FROM operational_orders o WHERE o.order_uuid = ?');
-            $facts->execute([$orderUuid]);
-            $fact = $facts->fetch(\PDO::FETCH_ASSOC) ?: [];
-            if (($fact['source_financial_state'] ?? null) === 'cleared' && ($fact['source_financial_basis'] ?? null) !== 'zero_total' || (float) ($fact['verified'] ?? 0) > 0 || (float) ($fact['received'] ?? 0) > 0) {
-                return ['state' => 'money_received'];
-            }
-            if (\Arasya\Operations\Confirmare\ConfirmareFinanceHolds::blocksProduction($this->pdo, $orderUuid)) {
-                return ['state' => 'finance_hold'];
-            }
-            $invoice = $this->pdo->prepare('SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = ? AND ' . \Arasya\Operations\Confirmare\ConfirmareInvoice::ISSUED_SQL . ' LIMIT 1');
-            $invoice->execute([$orderUuid]);
-            if ($invoice->fetchColumn() !== false) {
-                return ['state' => 'invoice_exists'];
-            }
-            if ((string) ($fact['production_stage_id'] ?? '') !== \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID) {
-                return ['state' => 'production_started'];
+            $blocker = $this->refusalBlocker($orderUuid);
+            if ($blocker !== null) {
+                return ['state' => $blocker];
             }
             $now = $this->clock->now()->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
             if (!\Arasya\Operations\Confirmare\FinanceVerificationRequests::withdrawForRefusal($this->pdo, $orderUuid, $actorUuid, $now, $requestId)) {
@@ -336,20 +336,23 @@ final readonly class CancellationSyncService
             $provider = $this->providers->for($source);
             $external = $this->externalRef($order);
             $mechanism = $provider->mechanism();
-            if ($mechanism !== 'manual' && ($external === null || !$this->providers->active($source))) {
+            // API 2.82.1: a provider that exists but whose gates are closed is named as such (CANCELLATION_SYNC_INACTIVE),
+            // never as an unsupported provider; rearmInactive() hands these operations to the shop once the gates open.
+            $inactive = $mechanism !== 'manual' && $external !== null && !$this->providers->active($source);
+            if ($mechanism !== 'manual' && ($external === null || $inactive)) {
                 $mechanism = 'manual';
             }
             [$state, $error] = match ($mechanism) {
                 'source_pull' => [SyncState::AWAITING_PICKUP, null],
                 'api' => [SyncState::MANUAL_REVIEW, 'REASON_REQUIRED'],
-                default => [SyncState::MANUAL_REVIEW, $provider instanceof ManualProvider ? $provider->reason() : ($external === null ? 'EXTERNAL_ORDER_UNKNOWN' : 'PROVIDER_UNSUPPORTED')],
+                default => [SyncState::MANUAL_REVIEW, $inactive ? self::INACTIVE_ERROR : ($provider instanceof ManualProvider ? $provider->reason() : ($external === null ? 'EXTERNAL_ORDER_UNKNOWN' : 'PROVIDER_UNSUPPORTED'))],
             };
             if ($mechanism === 'api') {
                 $mechanism = 'manual';
             }
             (new CancellationControl($this->pdo, $this->clock))->requestSource($orderUuid, $actorUuid, $requestId, $key, $mechanism);
             $operation = $operations->create($orderUuid, $generation, $source, $external ?? (string) $order['global_order_id'], $mechanism, $state, null,
-                'Clientul a refuzat comanda (Confirmare).', $actorUuid, $error, $requestId);
+                self::REFUSAL_NOTE, $actorUuid, $error, $requestId);
             $actor = (new PdoEmployeeRepository($this->pdo))->findByUuid($actorUuid);
             if ($actor !== null) {
                 $this->audit($actor, 'production.cancellation.sync_requested', $order, ['operation' => $operation['operation_uuid'], 'mechanism' => $mechanism, 'state' => $state, 'trigger' => 'customer_refused'], $requestId);
@@ -359,6 +362,124 @@ final readonly class CancellationSyncService
     }
 
     /** @param array<string, mixed> $input @return array<string, mixed> */
+    /**
+     * The money and production guards of an automatic cancellation request (a refused order): money received or verified,
+     * a finance hold, an issued invoice, or production past its first stage each leave the order to a person. Caller holds
+     * the order row lock.
+     */
+    private function refusalBlocker(string $orderUuid): ?string
+    {
+        $facts = $this->pdo->prepare('SELECT o.source_financial_state, o.source_financial_basis, o.production_stage_id, o.cancellation_state,
+                (SELECT COALESCE(MAX(a.verified_amount), 0) FROM finance_task_amounts a INNER JOIN finance_verification_requests r ON r.request_uuid = a.request_uuid WHERE r.order_uuid = o.order_uuid) AS verified,
+                (SELECT COALESCE(MAX(a.received_amount), 0) FROM finance_task_amounts a INNER JOIN finance_verification_requests r ON r.request_uuid = a.request_uuid WHERE r.order_uuid = o.order_uuid) AS received
+            FROM operational_orders o WHERE o.order_uuid = ?');
+        $facts->execute([$orderUuid]);
+        $fact = $facts->fetch(\PDO::FETCH_ASSOC) ?: [];
+        if (($fact['source_financial_state'] ?? null) === 'cleared' && ($fact['source_financial_basis'] ?? null) !== 'zero_total' || (float) ($fact['verified'] ?? 0) > 0 || (float) ($fact['received'] ?? 0) > 0) {
+            return 'money_received';
+        }
+        if (\Arasya\Operations\Confirmare\ConfirmareFinanceHolds::blocksProduction($this->pdo, $orderUuid)) {
+            return 'finance_hold';
+        }
+        $invoice = $this->pdo->prepare('SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = ? AND ' . \Arasya\Operations\Confirmare\ConfirmareInvoice::ISSUED_SQL . ' LIMIT 1');
+        $invoice->execute([$orderUuid]);
+        if ($invoice->fetchColumn() !== false) {
+            return 'invoice_exists';
+        }
+        if ((string) ($fact['production_stage_id'] ?? '') !== \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID) {
+            return 'production_started';
+        }
+        return null;
+    }
+
+    /**
+     * API 2.82.1 (owner decision 2026-11-26: a refused order is cancelled in the shop without a person's task). A request
+     * the server created for a refused order while the source's gates were closed was recorded as `manual` / manual_review
+     * (CANCELLATION_SYNC_INACTIVE; API 2.82.0 wrote PROVIDER_UNSUPPORTED). Once both gates of a source-pull shop are open,
+     * this hands each such request to the shop (awaiting_pickup), the same way a retry does. Only refusals (REFUSAL_NOTE):
+     * an expired proforma's request recorded while the gates were closed stays with a person, never cancelled in bulk.
+     *
+     * Only requests that never reached any channel (no attempt, no dispatch, no pickup) of the order's current stop are
+     * taken, and every guard runs again under the order lock first: an open finance entry, money received or verified, a
+     * finance hold or an open finance task, an issued invoice, or production past its first stage keeps the request in
+     * manual review for a person (nothing changes, the reason is noted once). The shop checks the money, the courier and
+     * the status again under its own locks before it cancels. Nothing here refunds, deletes an invoice or contacts a shop.
+     * With a gate closed it does nothing.
+     *
+     * @return array{active: list<string>, seen: int, rearmed: int, kept: array<string, int>}
+     */
+    public function rearmInactive(string $requestId, int $limit = self::REARM_LIMIT): array
+    {
+        $summary = ['active' => [], 'seen' => 0, 'rearmed' => 0, 'kept' => []];
+        foreach (['trendhome', 'outletperdele'] as $source) {
+            if ($this->providers->for($source)->mechanism() !== 'source_pull' || !$this->providers->active($source)) {
+                continue;
+            }
+            $summary['active'][] = $source;
+            $placeholders = implode(', ', array_fill(0, count(self::INACTIVE_ERRORS), '?'));
+            $statement = $this->pdo->prepare("SELECT o.operation_uuid FROM order_cancellation_sync_operations o
+                WHERE o.source_key = ? AND o.state = 'manual_review' AND o.mechanism = 'manual' AND o.note = ? AND o.last_error_code IN ({$placeholders})
+                  AND o.attempt_count = 0 AND o.dispatched_at IS NULL AND o.last_pulled_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM order_cancellation_sync_attempts a WHERE a.operation_uuid = o.operation_uuid AND a.kind <> 'create'
+                      AND NOT (a.kind = 'retry' AND a.outcome LIKE 'rearm\\_kept\\_%'))
+                ORDER BY o.created_at, o.operation_uuid LIMIT " . max(1, min($limit, self::REARM_LIMIT)));
+            $statement->execute([$source, self::REFUSAL_NOTE, ...self::INACTIVE_ERRORS]);
+            foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $operationUuid) {
+                $summary['seen']++;
+                $outcome = $this->transactionWithRetry(fn (): string => $this->rearmOne((string) $operationUuid, $source, $requestId));
+                if ($outcome === 'rearmed') {
+                    $summary['rearmed']++;
+                } else {
+                    $summary['kept'][$outcome] = ($summary['kept'][$outcome] ?? 0) + 1;
+                }
+            }
+        }
+        return $summary;
+    }
+
+    private function rearmOne(string $operationUuid, string $source, string $requestId): string
+    {
+        $operations = new SyncOperations($this->pdo, $this->clock);
+        $hint = $operations->byId($operationUuid, false);
+        if ($hint === null) {
+            return 'gone';
+        }
+        $order = $this->lockOrder((string) $hint['order_uuid']);
+        $operation = $operations->byId($operationUuid);
+        if ($operation === null || $operation['state'] !== SyncState::MANUAL_REVIEW || $operation['mechanism'] !== 'manual' || $operation['source_key'] !== $source
+            || $operation['note'] !== self::REFUSAL_NOTE || !in_array($operation['last_error_code'], self::INACTIVE_ERRORS, true) || (int) $operation['attempt_count'] !== 0 || $operation['dispatched_at'] !== null) {
+            return 'changed';
+        }
+        $control = $this->control((string) $order['order_uuid']);
+        if ($control === null || $control['hold_status'] !== CancellationControl::HELD || (int) $control['hold_generation'] !== (int) $operation['hold_generation']) {
+            return 'stale';
+        }
+        if ($control['source_status'] === 'cancelled') {
+            return 'source_cancelled';
+        }
+        $external = $this->externalRef($order);
+        if ($external === null || $external !== (string) $operation['external_order_ref']) {
+            return 'external_unknown';
+        }
+        $blocker = $this->financeOpen($order) ? 'finance_open'
+            : ($this->refusalBlocker((string) $order['order_uuid']) ?? \Arasya\Operations\Confirmare\ConfirmareFinanceHolds::expiryBlocker($this->pdo, (string) $order['order_uuid']));
+        if ($blocker !== null) {
+            $noted = $this->pdo->prepare("SELECT 1 FROM order_cancellation_sync_attempts WHERE operation_uuid = ? AND kind = 'retry' AND outcome = ? LIMIT 1");
+            $outcome = mb_substr('rearm_kept_' . $blocker, 0, 30);
+            $noted->execute([$operationUuid, $outcome]);
+            if ($noted->fetchColumn() === false) {
+                $operations->note($operation, 'retry', $outcome, null, null, 'arasya:activation', $requestId);
+            }
+            return $blocker;
+        }
+        $attempt = ['kind' => 'retry', 'outcome' => 'rearm_gates_open', 'system' => 'arasya:activation', 'correlation' => $requestId];
+        $operation = $operations->transition($operation, SyncState::RETRY_SCHEDULED,
+            ['mechanism' => 'source_pull', 'next_attempt_at' => null, 'attempt_count' => 0, 'last_error_code' => null, 'last_error_at' => null], $attempt);
+        $operations->transition($operation, SyncState::AWAITING_PICKUP, ['next_attempt_at' => null, 'last_pulled_at' => null],
+            ['kind' => 'retry', 'outcome' => 'handed_to_source', 'system' => 'arasya:activation', 'correlation' => $requestId]);
+        return 'rearmed';
+    }
+
     public function retry(EmployeeIdentity $actor, string $operationId, array $input, string $key, string $requestId): array
     {
         return $this->operationCommand($actor, 'retry', $operationId, $input, $key, $requestId, function (EmployeeIdentity $actor, array $order, array $operation, SyncOperations $operations) use ($requestId, $input): array {

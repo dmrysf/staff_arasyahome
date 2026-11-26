@@ -157,3 +157,51 @@ Rollback: switch off first (stops the decisions and the automation at once, noth
 let the active follow-ups finish or a supervisor resolve them (`check-rollback.php 2.81.0` refuses while any is active;
 they are never closed or deleted just to roll back), then API 2.81.0 and Staff 2.56.0 together, YD 2.32.0. Migration 063 is
 additive and stays (its waiting mark never blocks an older API's approval).
+
+## API 2.82.1: a refused order is cancelled in the shop without a person's task
+
+Owner decision 2026-11-26: after the 10-minute undo of a red decision, the shop cancellation runs on its own. No task goes to an operator.
+
+The automation already exists:
+
+- **API.** The refused order's follow-up stops production locally and creates a cancellation request (`requestForCustomerRefusal`). For Trend Home and Outlet Perdele, the request is `source_pull` / `awaiting_pickup`.
+- **YD SOFT 2.35.0.** `CancellationSync` pulls the request with the five-minute heartbeat. Under the order, finance and AWB locks, it checks the order again. It cancels only when all of these hold:
+  - no money was received or is in flight;
+  - no finance entry is open;
+  - no courier shipment exists;
+  - the status is pending, on-hold or processing.
+
+  Otherwise it reports `rejected_paid` / `rejected_status`, and a person decides.
+
+The request goes to the shop only when three gates are open. All three are off in production:
+
+1. the API switch `ARASYA_CANCELLATION_SYNC=enabled`;
+2. the shop flag `cancellation_sync_trendhome` / `cancellation_sync_outletperdele` (`bin/cancellation-sync.php enable`);
+3. the shop option `yd_arasya_cancellation_sync = 1`.
+
+With a gate closed, API 2.82.0 recorded the request as `manual` / `manual_review` with `PROVIDER_UNSUPPORTED`. A retry refuses `manual` requests, so the request stayed with a person even after activation.
+
+API 2.82.1 changes three things:
+
+- **Error code.** Such a request is now named `CANCELLATION_SYNC_INACTIVE`.
+- **Hand-over.** `CancellationSyncService::rearmInactive()` runs in the every-minute `confirmare-distribute.php`. It takes a `CANCELLATION_SYNC_INACTIVE` / `PROVIDER_UNSUPPORTED` request that has no attempt, no dispatch and no pickup. Once both Arasya gates of a source-pull shop are open, it hands that request to the shop: the same operation goes to `retry_scheduled`, then to `awaiting_pickup`. No second operation is created.
+- **Guards.** Every guard runs again under the order lock first:
+  - an open finance entry;
+  - money received or verified;
+  - a finance hold or an open finance task;
+  - an issued invoice;
+  - production past its first stage;
+  - a stale stop;
+  - a shop that already cancelled.
+
+  Any of these keeps the request in manual review, with one note (`rearm_kept_<reason>`).
+
+With a gate closed, it does nothing. Nothing here refunds, deletes a SmartBill document or contacts a shop.
+
+Activation is a separate production step:
+
+1. Open the API switch.
+2. Open the two shop flags.
+3. Open the YD SOFT option.
+
+After activation, the expired-proforma cancellation (K-05, 120 hours, bank check) also reaches the shop. WooCommerce sends its "Comandă anulată" e-mail to the customer.
