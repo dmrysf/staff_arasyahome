@@ -35,7 +35,8 @@ const overflow = async (page: Page) => {
 const RAW_KEY = /\b(?:dd|cf|fd|fr|common)\.[a-zA-Z]+(?:\.[a-zA-Z_]+)+\b/;
 let W: Workspace;
 
-test.describe.configure({ mode: "serial" });
+// The six sizes and three zooms per order make long tests; the TEST shop answers 10- and 20-line orders slower on CI.
+test.describe.configure({ mode: "serial", timeout: 240_000 });
 
 test.beforeAll(() => {
   try { php([]); } catch { /* seeded by an earlier spec */ }
@@ -105,7 +106,7 @@ async function axe(page: Page) {
 async function openOrder(page: Page, globalId: string) {
   await page.goto(`/confirmare/orders/${encodeURIComponent(globalId)}`);
   await expect(page.getByTestId("dd-work")).toBeVisible();
-  await expect(page.getByTestId("dd-total")).toContainText(/\d/);
+  await expect(page.getByTestId("dd-total")).toContainText(/\d/, { timeout: 30_000 });
 }
 
 test("TH 65794's shape: money header, big decisions, customer, the curtain card and how 355,32 is made up", async ({ browser }) => {
