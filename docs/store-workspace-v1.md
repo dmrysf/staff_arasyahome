@@ -92,6 +92,18 @@ Owner brief "STORE WORKSPACE V1.1 — FINAL AUTOMATION APPROVAL".
   (reprint with a reason) or by AWB readiness at stages 12–14. Nothing is re-issued for an order with a final invoice.
 - **Rollback.** API 2.83.x never reads the table; drop it only after rolling back.
 
+### API 2.84.1 — system identity correction (owner approval 2026-11-27)
+
+- The system issues as root (intervention desk instance) on behalf of the routed shop employee. Before 2.84.1 the shop read
+  in `issueOnBehalf` computed "who confirmed the order never invoices it" for root, so orders root had approved in a
+  recovery waited forever with `same_employee`.
+- `ConfirmareInvoice::read(..., $onBehalfOf)` (accepted only from the system identity) applies that rule to the real employee,
+  exactly as `act()` already did. A real employee who confirmed the order is still never invoiced for; root's own manual
+  invoice keeps the rule (no exemption); every other check (customer check, money, production document, SmartBill,
+  duplicates) is unchanged.
+- Audit stays separate: `order_confirmations.decided_by_employee_uuid` (the real approver), the request's
+  `trigger_employee_uuid` (the employee whose print asked) and the system's `order_invoice_actions` row.
+
 ## API (read routes; actions keep their existing routes)
 
 - `GET /confirmare/store/summary`: counters. Documents waiting (handoff list ready/print), documents needing a revision,

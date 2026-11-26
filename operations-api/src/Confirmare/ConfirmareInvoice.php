@@ -158,9 +158,17 @@ final readonly class ConfirmareInvoice
         }
     }
 
-    /** @return array<string, mixed> the state and what the actor may do next */
-    public function read(EmployeeIdentity $actor, string $globalOrderId, string $requestId): array
+    /**
+     * @param EmployeeIdentity|null $onBehalfOf API 2.84.1: the shop employee the system acts for (issueOnBehalf only; honoured
+     *   only for the system identity, root through the intervention desk instance). The "who confirmed the order never
+     *   invoices it" rule then applies to that employee, as in act(), never to the system identity.
+     * @return array<string, mixed> the state and what the actor may do next
+     */
+    public function read(EmployeeIdentity $actor, string $globalOrderId, string $requestId, ?EmployeeIdentity $onBehalfOf = null): array
     {
+        if ($onBehalfOf !== null && !$this->invoices->rootActs($actor)) {
+            throw self::denied();
+        }
         ['row' => $row, 'role' => $role, 'globalId' => $globalId] = $this->context($actor, $globalOrderId);
         $target = $this->registry->find((string) $row['source_key']);
         if ($target === null || !$target->allowsInvoiceRead() || !$this->invoices->installed()) {
@@ -182,7 +190,7 @@ final readonly class ConfirmareInvoice
         if (!$this->audit($row, $actor, $role, 'ok', $requestId, $summary['revision'])) {
             throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The read could not be recorded, so nothing is shown. Try again.');
         }
-        return ['available' => true, 'role' => $role] + $this->present($actor, $after, $target, $role, $summary);
+        return ['available' => true, 'role' => $role] + $this->present($actor, $after, $target, $role, $summary, $onBehalfOf);
     }
 
     /**
@@ -363,7 +371,7 @@ final readonly class ConfirmareInvoice
     public function issueOnBehalf(EmployeeIdentity $system, EmployeeIdentity $employee, string $globalOrderId, string $key, string $requestId): array
     {
         try {
-            $state = $this->read($system, $globalOrderId, $requestId);
+            $state = $this->read($system, $globalOrderId, $requestId, $employee);
         } catch (ApiException $e) {
             $gone = in_array($e->errorCode, ['CONFIRMARE_NOT_FOUND', 'CONFIRMARE_SOURCE_NOT_ELIGIBLE'], true);
             return ['state' => $gone ? 'stopped' : 'waiting', 'outcome' => self::code($e->errorCode)];
@@ -548,14 +556,15 @@ final readonly class ConfirmareInvoice
      * @param array<string, mixed> $summary
      * @return array<string, mixed>
      */
-    private function present(EmployeeIdentity $actor, array $row, SourceAccessTarget $target, string $role, array $summary): array
+    private function present(EmployeeIdentity $actor, array $row, SourceAccessTarget $target, string $role, array $summary, ?EmployeeIdentity $onBehalfOf = null): array
     {
         $orderUuid = (string) $row['order_uuid'];
         $handoff = (new ConfirmareHandoff($this->pdo, $this->modes))->view($orderUuid, false, false);
         $actions = $target->allowsInvoiceActions();
         // API 2.84.0: only an invoice manager acts by hand; the documents role reads (its invoice is issued by the system).
         $writer = $actions && $role === self::ROLE_MANAGER;
-        $confirmed = $this->confirmedBy($actor->employeeUuid, $orderUuid);
+        // The confirming person never invoices: the real employee the system acts for (API 2.84.1), else the actor.
+        $confirmed = $this->confirmedBy(($onBehalfOf ?? $actor)->employeeUuid, $orderUuid);
         $arasya = [];
         foreach (['issue' => 'issue', 'sendMail' => 'send_mail', 'reissue' => 'reissue', 'resolve' => 'resolve', 'delete' => 'delete'] as $name => $action) {
             $codes = $this->blockers($orderUuid, $action, $actor, $role);
