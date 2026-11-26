@@ -37,7 +37,9 @@ export type EditOperation =
   | { op: "remove_line"; lineId: string }
   | { op: "set_shipping"; shippingLineId: string; method: string }
   | { op: "apply_coupon"; code: string }
-  | { op: "remove_coupon"; code: string };
+  | { op: "remove_coupon"; code: string }
+  /** API 2.82.0 (YD SOFT 2.35.0): only the changed fields of one address. */
+  | { op: "set_address"; target: "shipping" | "billing"; fields: Partial<Record<string, string>> };
 export type EditTotals = { subtotal: string; subtotalTax: string; discount: string; discountTax: string; shipping: string; shippingTax: string; fees: string; tax: string; total: string };
 export type EditLineSnapshot = { name: string; productId: string; variationId: string; quantity: number; fields: Record<string, string> | null; subtotal: string; total: string; tax: string };
 export type EditLineDiff = { lineId: string; state: "added" | "removed" | "changed" | "unchanged"; before: EditLineSnapshot | null; after: EditLineSnapshot | null };
@@ -49,6 +51,10 @@ export type EditResult = {
   version: string; applicable: boolean; blockers: EditBlocker[]; before: EditTotals; after: EditTotals; lines: EditLineDiff[];
   shipping: { id: string; method: string; before: string; after: string }[]; financial: { delta: string; impact: EditImpact; cod: boolean };
   coupons?: { before: EditCouponLine[]; after: EditCouponLine[] } | null;
+  /** YD SOFT 2.35.0: the shipping method the shop's own rules chose for the new amount or zone. */
+  shippingAuto?: { id: string; from: string; to: string; reason: "free_shipping_threshold_reached" | "free_shipping_threshold_lost" | "shipping_zone_changed" }[];
+  /** YD SOFT 2.35.0: the changed address fields and the FAN locality reading. */
+  address?: Partial<Record<"shipping" | "billing", { changed: string[]; locality: { rule: string; suggestion: string | null } | null }>>;
 };
 export type EditPreview = EditResult & { previewToken: string };
 export type EditApplied = EditResult & { modifiedAt: string; financialState: { state: string; basis: string | null; attention: "additional_payment_due" | "refund_due" | null } };
@@ -178,7 +184,7 @@ const REFUSAL_REASONS = [
   "field_not_editable", "calculator_unavailable", "calculator_version_unsupported", "calculator_time_dependent", "calculator_unsupported_field",
   "calculator_invalid_input", "calculator_error", "calculator_state_unknown", "version_changed", "preview_stale", "blocked", "order_busy",
   "idempotency_conflict", "no_change", "not_received", "access_disabled", "rate_limited", "order_not_found", "order_not_eligible", "product_unavailable", "out_of_stock",
-  "coupon_not_found", "coupon_already_applied", "coupon_not_applied", "coupon_not_removable",
+  "coupon_not_found", "coupon_already_applied", "coupon_not_applied", "coupon_not_removable", "invalid_address",
 ] as const;
 
 /** Why the shop refused (or cannot be asked), in the operator's words; an unknown reason reads as a generic refusal. */
@@ -186,7 +192,7 @@ export function editReasonLabel(reason: string | null): string {
   return t(`cf.edit.reason.${reason !== null && (REFUSAL_REASONS as readonly string[]).includes(reason) ? reason : "other"}` as MessageKey);
 }
 
-const BLOCKERS = ["out_of_stock", "product_unavailable", "coupon_conditions", "coupon_invalid", "coupon_individual_use", "shipping_method_unsupported", "shipping_rate_unavailable", "free_shipping_threshold_lost", "free_shipping_threshold_reached", "free_shipping_unverifiable", "shipping_line_not_found"] as const;
+const BLOCKERS = ["out_of_stock", "product_unavailable", "coupon_conditions", "coupon_invalid", "coupon_individual_use", "shipping_method_unsupported", "shipping_rate_unavailable", "free_shipping_threshold_lost", "free_shipping_threshold_reached", "free_shipping_unverifiable", "shipping_line_not_found", "shipping_choice_ambiguous", "address_locked_by_invoice", "address_state_unknown"] as const;
 
 /** WooCommerce's coupon error codes (WC_Coupon::E_WC_COUPON_*) Staff explains; any other reads as "not valid". */
 const WOO_COUPON_REASONS: Record<number, string> = { 102: "not_yours", 105: "not_exist", 106: "usage_limit", 107: "expired", 108: "min_spend", 109: "not_applicable", 110: "sale_items", 112: "max_spend", 113: "excluded_products", 114: "excluded_categories", 115: "usage_limit", 116: "usage_limit" };

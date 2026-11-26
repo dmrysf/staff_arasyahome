@@ -14,12 +14,12 @@ import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type Or
 import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthorityMode, QrRevision, QrRevisionState, QrRotationReason } from "../../domain/productionQr";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
-import type { ShopLine, ShopLineImage, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
+import { ADDRESS_FIELDS, type AddressFields, type ShopLine, type ShopLineImage, type ShopOrderDetail, type ShopPerson, type ShopRead, type ShopStock } from "../../domain/confirmareShop";
 import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
 import { CANCEL_REASONS, CUSTOMER_CHECK_OUTCOMES, type CustomerCheckResult, INVOICE_ACTIONS, INVOICE_ROLES, PAYMENT_STATES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoicePaymentRead, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditCouponCatalog, type EditCouponLine, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
 import { mapAwbQueue, recentAwbsOf, mapBankCheck, mapBankCheckPreview, mapBankChecks, mapFinanceHold, mapFinanceReview, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
-import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
+import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DESK_VIEWS, DOCUMENT_STATES, FINANCIAL_ATTENTION, OPERATOR_DECISIONS, type DecisionAnswer, type DeskPool, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
 type FetchLike = typeof fetch;
 export type ProductionServicesOptions = {
@@ -1250,6 +1250,10 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     reassign: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reassign"), input, key, mapConfirmareItem),
     reopen: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reopen"), input, key, mapConfirmareItem),
     approve: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "approve"), input, key, mapConfirmareItem),
+    // API 2.82.0 (Operation Simplification V1): the desk lists and the operator's one decision.
+    desk: (view, source, signal) => http.request(`/confirmare/pool?view=${view}${source ? `&source=${encodeURIComponent(source)}` : ""}`, { signal, cache: "no-store" }, mapDeskPool),
+    decide: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "decision"), input, key, mapDecisionAnswer),
+    undoDecision: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "decision/undo"), input, key, mapConfirmareItem),
     reject: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reject"), input, key, mapConfirmareItem),
     contact: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "contact"), input, key, (value) => { const raw = objectValue(value); return { contact: mapConfirmareContact(raw.contact), item: mapConfirmareItem(raw.item), proformaCycle: mapContactCycle(raw.proformaCycle) }; }),
     availability: (signal) => http.request("/confirmare/availability", { signal }, mapConfirmareAvailability),
@@ -1381,7 +1385,27 @@ export function mapConfirmareItem(value: unknown): ConfirmareItem {
     contact: contact === null ? null : { outcome: oneOf(contact.outcome, CONTACT_OUTCOMES), at: timestampValue(contact.at), attempts: positiveInteger(contact.attempts), current: booleanValue(contact.current) },
     assignment: assignment === null ? null : { employeeId: stringValue(assignment.employeeId), displayName: stringValue(assignment.displayName), at: timestampValue(assignment.at), kind: stringValue(assignment.kind) },
     decision: decision === null ? null : { at: timestampValue(decision.at), by: nullableString(decision.by), reasonCode: nullableString(decision.reasonCode) },
+    // API 2.82.0: absent from an older API (undefined), so the desk shows "—".
+    ...(raw.waiting === undefined ? {} : { waiting: raw.waiting == null ? null : (() => { const w = objectValue(raw.waiting); return { at: timestampValue(w.at), note: w.note == null ? null : textValue(w.note, 300), callbackAt: w.callbackAt == null ? null : timestampValue(w.callbackAt) }; })() }),
+    ...(raw.lineCount === undefined ? {} : { lineCount: nonNegativeInteger(raw.lineCount) }),
+    ...(raw.display === undefined ? {} : { display: raw.display == null ? null : (() => { const d = objectValue(raw.display); return { total: d.total == null ? null : moneyValue(d.total), currency: d.currency == null ? null : textValue(d.currency, 3), warnings: listOf(d.warnings, 10, (w) => textValue(w, 40)), readAt: timestampValue(d.readAt), current: d.current === true }; })() }),
+    ...(raw.customerName === undefined ? {} : { customerName: raw.customerName == null ? null : textValue(raw.customerName, 120) }),
   };
+}
+
+/** API 2.82.0: the operator desk (one list and all four counts). */
+export function mapDeskPool(value: unknown): DeskPool {
+  const raw = objectValue(value);
+  const counts = objectValue(raw.counts);
+  return {
+    view: oneOf(raw.view, DESK_VIEWS), items: itemsOf(raw).map(mapConfirmareItem), total: nonNegativeInteger(raw.total), limit: positiveInteger(raw.limit),
+    counts: { new: nonNegativeInteger(counts.new), waiting: nonNegativeInteger(counts.waiting), confirmed: nonNegativeInteger(counts.confirmed), refused: nonNegativeInteger(counts.refused), doneToday: nonNegativeInteger(counts.doneToday) },
+    sources: raw.sources == null ? null : stringList(raw.sources),
+  };
+}
+export function mapDecisionAnswer(value: unknown): DecisionAnswer {
+  const raw = objectValue(value);
+  return { ...mapConfirmareItem(raw), operatorDecision: oneOf(raw.operatorDecision, OPERATOR_DECISIONS), undoUntil: raw.undoUntil == null ? null : timestampValue(raw.undoUntil) };
 }
 
 /** API 2.42.0: the production handoff of an order; strict (codes only, never customer data). */
@@ -1489,7 +1513,20 @@ const MONEY = /^-?[0-9]{1,12}\.[0-9]{0,4}$/;
 const textValue = (value: unknown, max = 500): string => { if (typeof value !== "string" || value.length > max) throw new StaffServiceError("SERVER_ERROR"); return value; };
 const moneyValue = (value: unknown): string => { const text = textValue(value, 20); if (!MONEY.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
 const listOf = <T>(value: unknown, max: number, map: (entry: unknown) => T): T[] => { if (!Array.isArray(value) || value.length > max) throw new StaffServiceError("SERVER_ERROR"); return value.map(map); };
-const shopPerson = (value: unknown): ShopPerson => { const raw = objectValue(value); return { name: textValue(raw.name, 200), company: textValue(raw.company, 200), phone: textValue(raw.phone, 40), addressLines: listOf(raw.addressLines, 6, (line) => textValue(line, 300)) }; };
+const shopPerson = (value: unknown): ShopPerson => {
+  const raw = objectValue(value);
+  // API 2.82.0 (YD SOFT 2.35.0): the address fields for the in-place correction; absent from an older shop.
+  const fields = raw.fields == null ? null : objectValue(raw.fields);
+  return {
+    name: textValue(raw.name, 200), company: textValue(raw.company, 200), phone: textValue(raw.phone, 40), addressLines: listOf(raw.addressLines, 6, (line) => textValue(line, 300)),
+    fields: fields === null ? null : Object.fromEntries(ADDRESS_FIELDS.map((name) => [name, fields[name] == null ? "" : textValue(fields[name], 200)])) as AddressFields,
+  };
+};
+const shopStock = (value: unknown): ShopStock | null => {
+  if (value == null) return null;
+  const raw = objectValue(value);
+  return { status: oneOf(raw.status, ["instock", "outofstock", "onbackorder", "unknown"] as const), managed: raw.managed === true, quantity: typeof raw.quantity === "number" && Number.isInteger(raw.quantity) ? raw.quantity : null };
+};
 /** API 2.51.0: the line picture, an https address only (the API already kept it to the shop's own host); null otherwise. */
 const shopImage = (value: unknown): ShopLineImage | null => {
   if (value == null) return null;
@@ -1508,6 +1545,7 @@ const shopLine = (value: unknown): ShopLine => {
     details: listOf(raw.details, 40, (entry) => { const detail = objectValue(entry); return { label: textValue(detail.label, 200), value: textValue(detail.value, 500) }; }),
     quantity: nonNegativeNumber(raw.quantity), unitPrice: moneyValue(raw.unitPrice), subtotal: moneyValue(raw.subtotal), discount: moneyValue(raw.discount), tax: moneyValue(raw.tax), total: moneyValue(raw.total), calculator: booleanValue(raw.calculator),
     image: shopImage(raw.image),
+    stock: shopStock(raw.stock),
   };
 };
 export function mapShopOrderDetail(value: unknown): ShopOrderDetail {
@@ -1639,6 +1677,13 @@ export function mapEditResult(value: unknown): EditResult {
     shipping: listOf(raw.shipping, 20, (entry) => { const line = objectValue(entry); return { id: editId(line.id), method: textValue(line.method, 60), before: moneyValue(line.before), after: moneyValue(line.after) }; }),
     financial: { delta: moneyValue(financial.delta), impact: oneOf(financial.impact, EDIT_IMPACTS), cod: booleanValue(financial.cod) },
     coupons: raw.coupons == null ? null : (() => { const coupons = objectValue(raw.coupons); return { before: listOf(coupons.before, 20, editCouponLine), after: listOf(coupons.after, 20, editCouponLine) }; })(),
+    // YD SOFT 2.35.0 (API 2.82.0): what the shop's rules chose by themselves, and the address correction.
+    shippingAuto: raw.shippingAuto == null ? [] : listOf(raw.shippingAuto, 20, (entry) => { const auto = objectValue(entry); return { id: editId(auto.id), from: textValue(auto.from, 60), to: textValue(auto.to, 60), reason: oneOf(auto.reason, ["free_shipping_threshold_reached", "free_shipping_threshold_lost", "shipping_zone_changed"] as const) }; }),
+    address: raw.address == null || Array.isArray(raw.address) ? {} : Object.fromEntries(Object.entries(objectValue(raw.address)).filter(([target]) => target === "shipping" || target === "billing").map(([target, entry]) => {
+      const address = objectValue(entry);
+      const locality = address.locality == null ? null : objectValue(address.locality);
+      return [target, { changed: listOf(address.changed, 20, (field) => textValue(field, 40)), locality: locality === null ? null : { rule: textValue(locality.rule, 40), suggestion: locality.suggestion == null ? null : textValue(locality.suggestion, 120) } }];
+    })),
   };
 }
 export function mapEditOutcome(value: unknown): EditOutcome {

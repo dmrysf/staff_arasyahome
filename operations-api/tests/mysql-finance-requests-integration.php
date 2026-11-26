@@ -946,25 +946,37 @@ $hAll = $ok($get($f, '/confirmare/finance/requests/history'), '2.80.0 history pa
 $check(count($hAll['items']) >= 1 && count($hAll['items']) <= 50 && array_filter($hAll['items'], static fn (array $i): bool => $i['category'] !== 'done') === [], '2.80.0: the history lists closed tasks only, one page at most');
 $error($get($f, '/confirmare/finance/requests/history?before=yesterday'), 422, 'FINANCE_REQUEST_INVALID', '2.80.0: a malformed cursor is refused');
 $error($get($who['rop'], '/confirmare/finance/requests/history'), 403, 'CONFIRMARE_FINANCE_DENIED', '2.80.0: an operator has no finance history');
-// Not received: waiting with its next check, then the system's recheck the next morning (one new task, never two).
+// API 2.82.0 (owner decision 2026-11-26): "NU" needs no reason and has no next-morning rule. The task waits for the payment;
+// the system opens no task by itself; the finance employee opens the order again whenever she wants (finance/check).
 $tb = $ok($task($f, $pb, $kernelSingle), '2.80.0 task b');
-$ok($cmd($f, $pb, 'decide', ['expectedVersion' => $tb['request']['version'], 'outcome' => 'not_received', 'reasonCode' => 'not_found'], "fvr-real-{$suffix}-0011", $kernelSingle), '2.80.0: not received');
+$ok($cmd($f, $pb, 'decide', ['expectedVersion' => $tb['request']['version'], 'outcome' => 'not_received'], "fvr-real-{$suffix}-0011", $kernelSingle), '2.82.0: not received without a reason');
+$check((string) $one('SELECT reason_code FROM finance_verification_requests WHERE request_uuid = ?', [$pb]) === 'not_found', '2.82.0: "NU" records the payment as not found at this moment');
 $box = $ok($inbox($f, $kernelSingle), '2.80.0 inbox after not received');
 $wb = array_column($box['items'], null, 'id')[$pb] ?? null;
-$check(is_array($wb) && $wb['awaitingPayment'] === true && is_string($wb['recheckAt']) && $wb['recheckAt'] > gmdate('Y-m-d\TH:i:s\Z'), '2.80.0: the payment not found waits with its next check (tomorrow morning)');
+$check(is_array($wb) && $wb['awaitingPayment'] === true && $wb['recheckAt'] === null, '2.82.0: the payment not found waits, without a next-morning check');
 $tracker = $container->financeVerificationRequests();
 $rootUuid = (string) $one('SELECT employee_uuid FROM system_root_identity LIMIT 1');
+$orderB = (string) $one('SELECT order_uuid FROM finance_verification_requests WHERE request_uuid = ?', [$pb]);
+$globalB = (string) $one('SELECT global_order_id FROM operational_orders WHERE order_uuid = ?', [$orderB]);
 if ($rootUuid !== '') {
-    $before = $tracker->track($rootUuid, 40, 0, 'test-tracking-dry', false);
-    $check($before['created'] === 0, '2.80.0: the tracking dry run writes nothing (' . json_encode($before) . ')');
     $pdo->prepare('UPDATE finance_verification_requests SET decided_at = DATE_SUB(decided_at, INTERVAL 2 DAY) WHERE request_uuid = ?')->execute([$pb]);
-    $orderB = (string) $one('SELECT order_uuid FROM finance_verification_requests WHERE request_uuid = ?', [$pb]);
     $run1 = $tracker->track($rootUuid, 40, 0, 'test-tracking-1', true);
-    $run2 = $tracker->track($rootUuid, 40, 0, 'test-tracking-2', true);
-    $newB = $all("SELECT r.*, e.reason_code FROM finance_verification_requests r JOIN finance_verification_request_events e ON e.request_uuid = r.request_uuid AND e.version_after = 1 WHERE r.order_uuid = ? AND r.requested_at > (SELECT requested_at FROM finance_verification_requests WHERE request_uuid = ?)", [$orderB, $pb]);
-    $check($run1['recheck'] >= 1 && count($newB) === 1 && $newB[0]['state'] === 'assigned' && $newB[0]['requested_by_employee_uuid'] === $rootUuid && $newB[0]['reason_code'] === 'auto_recheck'
-        && $run2['created'] === 0, '2.80.0: the next morning the system opens one new task for the payment (auto_recheck), never a second one (' . json_encode([$run1, $run2]) . ')');
+    $newB = (int) $one('SELECT COUNT(*) FROM finance_verification_requests WHERE order_uuid = ? AND request_uuid <> ?', [$orderB, $pb]);
+    $check($run1['recheck'] === 0 && $newB === 0, '2.82.0: the system opens no recheck task by itself (' . json_encode($run1) . ')');
 }
+$cmd2 = static function (array $w, string $path, array $body, ?string $key = null, mixed $k = null) use ($call, $pdo): array { $pdo->exec('DELETE FROM api_rate_limit_buckets'); return $call($w, 'POST', $path, $body, $key, $k); };
+// She finds the order by its number and checks it again at once (minutes after her "NU"): a new task, assigned to her.
+$numberB = (string) $one('SELECT order_number FROM operational_orders WHERE order_uuid = ?', [$orderB]);
+$found = $ok($get($f, '/confirmare/finance/lookup?q=' . rawurlencode($numberB), $kernelSingle), '2.82.0 lookup');
+$check(count($found['items']) === 1 && $found['items'][0]['globalOrderId'] === $globalB && $found['items'][0]['task']['state'] === 'not_received', '2.82.0: the order is found by its number with its latest task');
+$error($get($f, '/confirmare/finance/lookup?q=' . rawurlencode('DROP TABLE'), $kernelSingle), 422, 'VALIDATION_FAILED', '2.82.0: only a number is searched');
+$again = $ok($cmd2($f, '/confirmare/finance/check', ['globalOrderId' => $globalB], "fvr-real-{$suffix}-0012", $kernelSingle), '2.82.0 check again');
+$newTask = (string) $again['requestId'];
+$check($again['created'] === true && $newTask !== $pb && (string) $one('SELECT assigned_employee_uuid FROM finance_verification_requests WHERE request_uuid = ?', [$newTask]) === (string) $one('SELECT assigned_employee_uuid FROM finance_verification_requests WHERE request_uuid = ?', [$pb])
+    && (string) $one('SELECT state FROM finance_verification_requests WHERE request_uuid = ?', [$pb]) === 'not_received', '2.82.0: a new task assigned to her; the earlier "NU" stays in the history');
+$same = $ok($cmd2($f, '/confirmare/finance/check', ['globalOrderId' => $globalB], "fvr-real-{$suffix}-0013", $kernelSingle), '2.82.0 check twice');
+$check($same['requestId'] === $newTask && $same['created'] === false, '2.82.0: checking again opens the same open task (never two)');
+$error($cmd2($who['rop'], '/confirmare/finance/check', ['globalOrderId' => $globalB], "fvr-real-{$suffix}-0014", $kernelSingle), 404, 'FINANCE_REQUEST_NOT_FOUND', '2.82.0: an operator cannot open a finance check (the order is not found for her)');
 
 // Leave the shared disposable database as the next suites expect it: no Confirmare, finance, request or invoice state.
 foreach (['finance_task_amounts', 'finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',

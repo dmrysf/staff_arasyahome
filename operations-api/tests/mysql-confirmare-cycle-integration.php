@@ -14,6 +14,7 @@ declare(strict_types=1);
 // cycles are shop-scoped; the audit keeps codes only.
 
 use Arasya\Operations\Application\Container;
+use Arasya\Operations\Confirmare\ConfirmareCycles;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationRunner;
@@ -190,6 +191,14 @@ $cancels = static fn (int $n): int => $th->smartbillCancels['pf:' . $id($n)] ?? 
 $proformas = static fn (int $n): int => $th->smartbillDocuments['pf:' . $id($n)] ?? 0;
 
 // ---- 2. Three unanswered calls, each recorded as its own real call, with no waiting time between them -------------------
+// API 2.82.0 (Operation Simplification V1): the three-unanswered-calls rule is retired in production (no call cap, no
+// automatic proforma). The no-answer cycles started before keep running, so this suite turns the old rule back on to keep
+// covering their timers, reminders, bank checks and expiry; the retired default is checked first.
+$check(ConfirmareCycles::$noAnswerRuleRetired === true, 'API 2.82.0: the three-unanswered-calls rule is retired by default');
+$retired = $ok($contact($who['cop'], $g(1), 'no_answer'), 'an unanswered call with the rule retired');
+$check(($retired['proformaCycle']['reason'] ?? null) === 'rule_retired', 'API 2.82.0: an unanswered call starts no proforma: ' . json_encode($retired['proformaCycle'] ?? null));
+$pdo->prepare("DELETE FROM order_confirmation_contacts WHERE global_order_id = ?")->execute([$g(1)]);
+ConfirmareCycles::$noAnswerRuleRetired = false;
 $first = $ok($contact($who['cop'], $g(1), 'no_answer'), 'first unanswered call');
 $check(($first['proformaCycle']['state'] ?? null) === 'not_started' && ($first['proformaCycle']['reason'] ?? null) === 'calls_remaining', 'one unanswered call starts nothing: ' . json_encode($first['proformaCycle'] ?? null));
 $replayKey = 'cyc-replay-' . bin2hex(random_bytes(6));
@@ -774,6 +783,59 @@ $check(count(array_filter(range(171, 174), static fn (int $k): bool => $qState($
     'S13: repeated passes keep the protected cycles waiting for finance and cancel nothing');
 $pdo->prepare('DELETE FROM finance_task_amounts WHERE request_uuid IN (?, ?, ?, ?)')->execute(array_map(static fn (int $k): string => sprintf('00000000-0000-4000-8000-%012d', 13500 + $k), range(171, 174)));
 $pdo->prepare('DELETE FROM finance_verification_requests WHERE request_uuid IN (?, ?, ?, ?)')->execute(array_map(static fn (int $k): string => sprintf('00000000-0000-4000-8000-%012d', 13500 + $k), range(171, 174)));
+
+// ---- S14. API 2.82.0: the green decision's follow-up (total acceptance, then the advance proforma through the cycle) ----------
+$dBase = T::freeOrderBase($pdo, 930000, 959999, 10);
+$dId = (string) ($dBase + 1);
+$dGid = 'trendhome:' . $dId;
+$ok(T::ingest($kernel, 'trendhome', $payload($dId, 900)), 'S14 order');
+$th->orders[$dId] = ['id' => $dId, 'number' => $dId, 'eligible' => true, 'phone' => CYC_PHONE, 'pricing' => 'sha256:' . hash('sha256', 'cyc-price-' . $dId),
+    'invoice' => ['cleared' => false, 'cod' => true, 'totalAccepted' => false]];
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+if ((string) $one('SELECT COALESCE(assigned_employee_uuid, \'\') FROM order_confirmations WHERE global_order_id = ?', [$dGid]) !== $uuids['cop']) {
+    $ok($call($who['cop'], 'POST', '/confirmare/orders/' . rawurlencode($dGid) . '/claim', ['expectedVersion' => $version($dGid)]), 'S14 the operator takes the order');
+}
+$ok($get($who['cop'], '/confirmare/orders/' . rawurlencode($dGid) . '/source'), 'S14 the screen reads the shop order (current prices)');
+$dFp = $detail($who['cop'], $dGid)['review']['fingerprint'];
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$ok($call($who['cop'], 'POST', '/confirmare/orders/' . rawurlencode($dGid) . '/decision', ['expectedVersion' => $version($dGid), 'decision' => 'confirmed', 'reviewFingerprint' => $dFp]), 'S14 green');
+$check($cycleOf($dGid) === null && $proformas($dBase - $numberBase + 1) === 0, 'S14: nothing is sent to the shop during the undo period');
+$pdo->exec("UPDATE confirmare_decision_followups SET due_at = '2000-01-01 00:00:00' WHERE active_order_uuid IS NOT NULL");
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$followups = $container->confirmareDecisionFollowUps();
+$fr = $followups->run(10, 'test-s14');
+$dFollow = $all('SELECT state, step, closed_reason FROM confirmare_decision_followups WHERE global_order_id = ?', [$dGid])[0] ?? [];
+$accepts = $all("SELECT employee_uuid, access_role, state FROM order_invoice_actions WHERE global_order_id = ? AND action = 'total_accept'", [$dGid]);
+$dCycle = $cycleOf($dGid);
+$check(count($accepts) === 1 && $accepts[0]['employee_uuid'] === $uuids['cop'] && $accepts[0]['state'] === 'applied' && $th->orders[$dId]['invoice']['totalAccepted'] === true,
+    'S14: the customer\'s acceptance of the total is recorded in the shop once, as the operator who decided: ' . json_encode([$fr, $dFollow, $accepts]));
+$check($dCycle !== null && $dCycle['origin'] === 'operator' && $dCycle['owner_employee_uuid'] === $uuids['cop'] && $dCycle['state'] === 'running' && $dCycle['sent_at'] !== null
+    && ($th->smartbillDocuments['pf:' . $dId] ?? 0) === 1 && $dFollow['state'] === 'done' && $dFollow['closed_reason'] === 'started',
+    'S14: then the advance proforma is issued and e-mailed through the cycle (timer running), the follow-up done: ' . json_encode([$dCycle['state'] ?? null, $dFollow]));
+$followups->run(10, 'test-s14-again');
+$cycles->run(100, 'test-s14-cycles');
+$check(($th->smartbillDocuments['pf:' . $dId] ?? 0) === 1 && (int) $one("SELECT COUNT(*) FROM order_invoice_actions WHERE global_order_id = ? AND action = 'total_accept'", [$dGid]) === 1, 'S14: running again issues nothing twice');
+// A green decision whose order changed before the follow-up: nothing is sent, the follow-up fails as order_changed.
+$eId = (string) ($dBase + 2);
+$eGid = 'trendhome:' . $eId;
+$ok(T::ingest($kernel, 'trendhome', $payload($eId, 901)), 'S14 second order');
+$th->orders[$eId] = ['id' => $eId, 'number' => $eId, 'eligible' => true, 'phone' => CYC_PHONE, 'pricing' => 'sha256:' . hash('sha256', 'cyc-price-' . $eId), 'invoice' => ['cleared' => false, 'cod' => true, 'totalAccepted' => false]];
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+if ((string) $one('SELECT COALESCE(assigned_employee_uuid, \'\') FROM order_confirmations WHERE global_order_id = ?', [$eGid]) !== $uuids['cop']) {
+    $ok($call($who['cop'], 'POST', '/confirmare/orders/' . rawurlencode($eGid) . '/claim', ['expectedVersion' => $version($eGid)]), 'S14 take the second order');
+}
+$ok($get($who['cop'], '/confirmare/orders/' . rawurlencode($eGid) . '/source'), 'S14 read the second order');
+$eFp = $detail($who['cop'], $eGid)['review']['fingerprint'];
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$ok($call($who['cop'], 'POST', '/confirmare/orders/' . rawurlencode($eGid) . '/decision', ['expectedVersion' => $version($eGid), 'decision' => 'confirmed', 'reviewFingerprint' => $eFp]), 'S14 green on the second order');
+$pdo->prepare('UPDATE operational_order_items SET width_value = 4 WHERE order_uuid = ?')->execute([$orderUuid($eGid)]);
+$pdo->exec("UPDATE confirmare_decision_followups SET due_at = '2000-01-01 00:00:00' WHERE active_order_uuid IS NOT NULL");
+$followups->run(10, 'test-s14-changed');
+$eFollow = $all('SELECT state, closed_reason FROM confirmare_decision_followups WHERE global_order_id = ?', [$eGid])[0] ?? [];
+$check($eFollow === ['state' => 'failed', 'closed_reason' => 'order_changed'] && (int) $one("SELECT COUNT(*) FROM order_invoice_actions WHERE global_order_id = ?", [$eGid]) === 0 && $cycleOf($eGid) === null,
+    'S14: an order changed after the green decision gets no total acceptance and no proforma: ' . json_encode($eFollow));
+$pdo->exec('DELETE FROM confirmare_decision_followups');
+$pdo->exec('DELETE FROM confirmare_order_display');
 
 // ---- Cleanup (later suites share the database in CI) ------------------------------------------------------------------------
 $clear();

@@ -56,6 +56,16 @@ use Throwable;
 final class ConfirmareCycles
 {
     public const NO_ANSWER_PER_CYCLE = 3;
+    /**
+     * API 2.82.0 (owner decision 2026-11-26): the three-unanswered-calls rule (call cap and automatic proforma) is retired
+     * for every order. Cycles already running keep their timers, reminders and expiry unchanged.
+     */
+    public const RULE_RETIRED = true;
+    /**
+     * The same rule as a switch, ON in production. Only the cycle suite turns it off, to keep covering the timers, reminders
+     * and expiry of the no-answer cycles that were started before API 2.82.0 and keep running.
+     */
+    public static bool $noAnswerRuleRetired = self::RULE_RETIRED;
     public const REMINDER_1_HOURS = 24;
     public const REMINDER_2_HOURS = 72;
     public const EXPIRY_HOURS = 120;
@@ -155,6 +165,11 @@ final class ConfirmareCycles
     /** Called by ConfirmareService::contact under the order row lock before an unanswered call is recorded. */
     public static function assertNoAnswerAllowed(PDO $pdo, string $orderUuid): void
     {
+        // API 2.82.0 (Operation Simplification V1, owner decision 2026-11-26): there is no limit on unanswered calls any
+        // more and an unanswered call never starts a proforma. The old contact route still records an attempt.
+        if (self::$noAnswerRuleRetired) {
+            return;
+        }
         $state = self::callState($pdo, $orderUuid);
         if ($state['complete']) {
             throw new ApiException(409, 'CONFIRMARE_CALL_CYCLE_COMPLETE', 'Trei apeluri fără răspuns sunt deja înregistrate în acest ciclu.', ['noAnswer' => $state['noAnswer'], 'max' => self::NO_ANSWER_PER_CYCLE]);
@@ -170,6 +185,10 @@ final class ConfirmareCycles
      */
     public function afterNoAnswer(EmployeeIdentity $actor, string $orderUuid, string $requestId): array
     {
+        if (self::$noAnswerRuleRetired) {
+            // API 2.82.0: the proforma follows only the customer's green confirmation (ConfirmareDecisionFollowUps).
+            return ['state' => 'not_started', 'reason' => 'rule_retired'];
+        }
         if (!$this->installed()) {
             return ['state' => 'not_started', 'reason' => 'schema_missing'];
         }
@@ -196,6 +215,77 @@ final class ConfirmareCycles
             throw $error;
         }
         return $this->present($this->advance($cycle['cycle_uuid'], $requestId) ?? $cycle);
+    }
+
+    /**
+     * API 2.82.0 (ConfirmareDecisionFollowUps): the advance proforma of a cash-on-delivery order the customer confirmed (green)
+     * starts here, after the customer's acceptance of the total was recorded in the shop. It is the existing operator cycle
+     * (origin `operator`, state issue_pending): the worker issues the proforma (an existing current proforma is re-used, never
+     * issued twice), e-mails it, and runs the reminders and the expiry exactly as for a proforma the operator sent. Nothing
+     * starts for an order that needs no advance (paid, online, zero total), that is closed or held, while an invoice action
+     * of the order is still settling, or when a cycle is already active (an earlier proforma keeps its timer).
+     *
+     * @return array<string, mixed> {state, reason?}
+     */
+    public function startForConfirmed(string $orderUuid, string $employeeUuid, string $requestId): array
+    {
+        if (!$this->installed()) {
+            return ['state' => 'not_started', 'reason' => 'schema_missing'];
+        }
+        $this->pdo->beginTransaction();
+        try {
+            $order = $this->lockOrder($orderUuid);
+            $reason = match (true) {
+                $order === null => 'order_unavailable',
+                $order['status'] !== 'approved' => 'confirmare_not_approved',
+                $order['payment_method'] !== 'cod' => 'advance_not_required',
+                $order['cancellation_state'] === 'held' || $order['operational_status'] === 'unavailable' || in_array((string) $order['source_commerce_status_code'], self::CLOSED_COMMERCE, true) => 'order_closed',
+                $order['source_financial_state'] === 'cleared' => 'advance_already_collected',
+                default => null,
+            };
+            if ($reason === null) {
+                $target = $this->registry->find((string) $order['source_key']);
+                if ($target === null || !$target->allowsInvoiceActions() || !$this->invoices->installed()) {
+                    $reason = 'invoice_disabled';
+                } elseif ($this->activeCycle($orderUuid, true) !== null) {
+                    $reason = 'cycle_exists';
+                } elseif (ConfirmareInvoice::actionOpen($this->pdo, $orderUuid)) {
+                    $reason = 'invoice_action_open';
+                }
+            }
+            if ($reason !== null) {
+                $this->pdo->rollBack();
+                return ['state' => 'not_started', 'reason' => $reason];
+            }
+            $cycle = $this->createCycle($order, 'operator', $employeeUuid, 'issue_pending', null, null);
+            $this->pdo->commit();
+        } catch (Throwable $error) {
+            $this->rollBack();
+            if ($error instanceof PDOException) {
+                return $this->activeCycle($orderUuid) === null ? ['state' => 'not_started', 'reason' => 'storage_unavailable'] : ['state' => 'not_started', 'reason' => 'cycle_exists'];
+            }
+            throw $error;
+        }
+        $advanced = $this->advance((string) $cycle['cycle_uuid'], $requestId) ?? $cycle;
+        return ['state' => 'started', 'cycle' => (string) $advanced['state']];
+    }
+
+    /**
+     * API 2.82.0: the customer refused the order (red): its open proforma cycle stops, so no reminder reaches the customer and
+     * the expiry worker does not act on it. A cycle in the middle of a SmartBill cancellation is left to finish (never two
+     * operations at once). The proforma itself stays in SmartBill (a person may cancel it there); nothing is cancelled here.
+     */
+    public function closeForRefusal(string $orderUuid): bool
+    {
+        if (!$this->installed()) {
+            return false;
+        }
+        $active = $this->activeCycle($orderUuid);
+        if ($active === null || in_array($active['state'], ['cancel_pending', 'cancel_unknown', 'order_cancel_pending'], true) || $active['claim_token'] !== null) {
+            return false;
+        }
+        $this->close($active, 'closed', 'customer_refused');
+        return true;
     }
 
     /** @param array<string, mixed> $order @return string|null why no proforma cycle starts */

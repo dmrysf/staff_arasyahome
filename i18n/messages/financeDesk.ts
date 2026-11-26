@@ -5,6 +5,13 @@
  * translated.
  */
 export const financeDeskRO = {
+  "fd.no.anytime": "NU înseamnă doar că plata nu se vede acum. Puteți redeschide comanda oricând, fără limită.",
+  "fd.pay.declaration": "Confirm că am verificat această plată în extrasul bancar: suma, referința și data sunt cele reale.",
+  "fd.pay.confirmContinue": "Confirmă plata și continuă",
+  "fd.search.title": "Caută orice comandă",
+  "fd.search.check": "Verifică plata",
+  "fd.search.none": "Nicio comandă găsită în magazinele dvs.",
+  "fd.search.taskOf": "Sarcina este la {name}",
   "fd.eyebrow": "Contabilitate",
   "fd.title": "Verificări de plată",
   "fd.kpi.todo": "De verificat",
@@ -172,6 +179,13 @@ export const financeDeskRO = {
 };
 
 export const financeDeskEN = {
+  "fd.no.anytime": "NO only means the payment is not visible now. You can reopen the order at any time, without a limit.",
+  "fd.pay.declaration": "I confirm I checked this payment on the bank statement: the amount, reference and date are the real ones.",
+  "fd.pay.confirmContinue": "Confirm the payment and continue",
+  "fd.search.title": "Find any order",
+  "fd.search.check": "Check the payment",
+  "fd.search.none": "No order found in your shops.",
+  "fd.search.taskOf": "The task is with {name}",
   "fd.eyebrow": "Accounting",
   "fd.title": "Payment checks",
   "fd.kpi.todo": "To check",
@@ -339,6 +353,13 @@ export const financeDeskEN = {
 };
 
 export const financeDeskTR = {
+  "fd.no.anytime": "HAYIR yalnızca ödemenin şu an görünmediği anlamına gelir. Siparişi istediğiniz zaman, sınırsız yeniden açabilirsiniz.",
+  "fd.pay.declaration": "Bu ödemeyi banka ekstresinde kontrol ettiğimi onaylıyorum: tutar, referans ve tarih gerçektir.",
+  "fd.pay.confirmContinue": "Ödemeyi onayla ve devam et",
+  "fd.search.title": "Herhangi bir siparişi bul",
+  "fd.search.check": "Ödemeyi kontrol et",
+  "fd.search.none": "Mağazalarınızda sipariş bulunamadı.",
+  "fd.search.taskOf": "Görev {name} üzerinde",
   "fd.eyebrow": "Muhasebe",
   "fd.title": "Ödeme kontrolleri",
   "fd.kpi.todo": "Kontrol edilecek",
@@ -506,6 +527,13 @@ export const financeDeskTR = {
 };
 
 export const financeDeskSI = {
+  "fd.no.anytime": "නැහැ යන්නෙන් අදහස් වන්නේ ගෙවීම දැන් නොපෙනෙන බව පමණි. ඔබට ඕනෑම වේලාවක, සීමාවකින් තොරව ඇණවුම නැවත විවෘත කළ හැක.",
+  "fd.pay.declaration": "මම මෙම ගෙවීම බැංකු ප්‍රකාශයේ පරීක්ෂා කළ බව තහවුරු කරමි: මුදල, යොමුව සහ දිනය සැබෑය.",
+  "fd.pay.confirmContinue": "ගෙවීම තහවුරු කර ඉදිරියට යන්න",
+  "fd.search.title": "ඕනෑම ඇණවුමක් සොයන්න",
+  "fd.search.check": "ගෙවීම පරීක්ෂා කරන්න",
+  "fd.search.none": "ඔබේ වෙළඳසැල්වල ඇණවුමක් හමු නොවීය.",
+  "fd.search.taskOf": "කාර්යය {name} සතුයි",
   "fd.eyebrow": "ගිණුම්කරණය",
   "fd.title": "ගෙවීම් පරීක්ෂා",
   "fd.kpi.todo": "පරීක්ෂා කළ යුතු",

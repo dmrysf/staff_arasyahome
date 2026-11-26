@@ -43,5 +43,32 @@ if (!isset($options['dry-run']) && $source === null) {
         $result['paidRouting'] = ['failed' => true];
     }
 }
+// API 2.82.0 (Operation Simplification V1): a verified online payment goes to the shop employee without the operator (the
+// system approval, then the routing); production still waits for the shop employee's customer check.
+if (!isset($options['dry-run']) && $source === null) {
+    try {
+        $online = $container->confirmareService()->approveVerifiedOnline(50, 'cli-online-' . bin2hex(random_bytes(6)));
+        $routed = $container->confirmareInvoice()->routeOnline(50);
+        $result['onlineRouting'] = ['approved' => $online['approved'], 'routed' => $routed['routed'], 'skipped' => $online['skipped'] + $routed['skipped']];
+    } catch (Throwable) {
+        $result['onlineRouting'] = ['failed' => true];
+    }
+}
+// API 2.82.0 (Operation Simplification V1): what follows an operator's decision runs within a minute (the customer's
+// acceptance of the total, the advance proforma, the cancellation of a refused order after its undo period).
+if (!isset($options['dry-run']) && $source === null) {
+    try {
+        if ((int) $container->pdo()->query("SELECT GET_LOCK('arasya_confirmare_followups', 0)")->fetchColumn() === 1) {
+            try {
+                $followups = $container->confirmareDecisionFollowUps()->run(30, 'cli-followups-' . bin2hex(random_bytes(6)));
+                $result['decisionFollowUps'] = $followups;
+            } finally {
+                $container->pdo()->query("SELECT RELEASE_LOCK('arasya_confirmare_followups')");
+            }
+        }
+    } catch (Throwable) {
+        $result['decisionFollowUps'] = ['failed' => true];
+    }
+}
 fwrite(STDOUT, json_encode($result + ['dryRun' => isset($options['dry-run'])], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");
 exit(0);

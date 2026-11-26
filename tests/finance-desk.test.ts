@@ -188,7 +188,8 @@ test("permissions stay as they were: Cristina's scopes open the desk; view-only,
   // Staff 2.55.0: the finance task calls, plus the history and the two follow-up payments (no second approval, no refund).
   const source = readFileSync(path.join(root, "features/confirmare/FinanceDesk.tsx"), "utf8");
   const calls = [...new Set([...source.matchAll(/service\.([a-zA-Z]+)\(/g)].map((match) => match[1]))].sort();
-  assert.deepEqual(calls, ["addPayment", "correctPayment", "decideTask", "financeHistory", "financeInbox", "financeTask", "reconcileTask", "startTask"]);
+  // Staff 2.57.0: plus her own search of any order and her own payment check (financeLookup, financeCheckOrder).
+  assert.deepEqual(calls, ["addPayment", "correctPayment", "decideTask", "financeCheckOrder", "financeHistory", "financeInbox", "financeLookup", "financeTask", "reconcileTask", "startTask"]);
   assert.ok(canAccessRoute(cristina, `/confirmare/finance/requests/${id(1)}/done`));
   assert.deepEqual(parseStaffRoute(`/confirmare/finance/requests/${id(1)}/done`), { kind: "finance-task-done", pathname: `/confirmare/finance/requests/${id(1)}/done`, requestId: id(1) });
 });

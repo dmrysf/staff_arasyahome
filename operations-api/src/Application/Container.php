@@ -236,6 +236,12 @@ final class Container
         );
     }
 
+    /** API 2.82.0: what the system does after an operator's decision (total acceptance, proforma, refusal cancellation). */
+    public function confirmareDecisionFollowUps(): \Arasya\Operations\Confirmare\ConfirmareDecisionFollowUps
+    {
+        return new \Arasya\Operations\Confirmare\ConfirmareDecisionFollowUps($this->pdo, $this->clock, $this->confirmareInvoice(), $this->confirmareCycles(), $this->cancellationSyncService());
+    }
+
     /** Finance safety of the proforma expiry (API 2.71.0, migration 054): holds, the review list. */
     public function confirmareFinanceHolds(): \Arasya\Operations\Confirmare\ConfirmareFinanceHolds
     {

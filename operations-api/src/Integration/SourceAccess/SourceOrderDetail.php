@@ -127,6 +127,7 @@ final class SourceOrderDetail
                 'tax' => self::money($line['tax'] ?? null),
                 'total' => self::money($line['total'] ?? null),
                 'calculator' => self::bool($line['calculator'] ?? null),
+                'stock' => self::stock($line['stock'] ?? null),
                 'image' => self::image($line['image'] ?? null, $shopHost),
             ];
         });
@@ -171,6 +172,38 @@ final class SourceOrderDetail
             'company' => self::text($person['company'] ?? null, 200, true),
             'phone' => self::phone($person['phone'] ?? null),
             'addressLines' => array_map(static fn (mixed $line): string => self::text($line, 300), $lines),
+            // API 2.82.0 (YD SOFT 2.35.0): the shop's own address fields, for the operator's in-place correction. Absent from
+            // an older shop (null). Read only here: Arasya never stores them.
+            'fields' => ($person['fields'] ?? null) === null ? null : self::addressFields($person['fields']),
+        ];
+    }
+
+    /** The WooCommerce address fields an operator may correct (API 2.82.0). */
+    public const ADDRESS_FIELDS = ['firstName', 'lastName', 'company', 'address1', 'address2', 'city', 'state', 'postcode', 'country'];
+
+    /** @return array<string, string> */
+    private static function addressFields(mixed $value): array
+    {
+        $fields = self::map($value);
+        $out = [];
+        foreach (self::ADDRESS_FIELDS as $key) {
+            $out[$key] = (string) (self::text($fields[$key] ?? '', 200, true) ?? '');
+        }
+        return $out;
+    }
+
+    /** API 2.82.0 (YD SOFT 2.35.0): the product's stock as the shop knows it now, or null from an older shop. @return array<string, mixed>|null */
+    private static function stock(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        $stock = self::map($value);
+        $quantity = $stock['quantity'] ?? null;
+        return [
+            'status' => self::choice($stock['status'] ?? null, ['instock', 'outofstock', 'onbackorder', 'unknown']),
+            'managed' => self::bool($stock['managed'] ?? false),
+            'quantity' => is_int($quantity) && $quantity > -1000000 && $quantity < 1000000000 ? $quantity : null,
         ];
     }
 

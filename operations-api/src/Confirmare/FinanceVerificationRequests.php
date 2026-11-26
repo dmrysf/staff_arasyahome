@@ -121,6 +121,8 @@ final readonly class FinanceVerificationRequests
      * (Europe/Bucharest), never several times a day (bin/finance-payment-tracking.php).
      */
     public const RECHECK_HOUR = 8;
+    /** API 2.82.0 (owner decision 2026-11-26): the automatic next-morning recheck is retired; a recheck is the employee's choice. */
+    public const AUTO_RECHECK = false;
     /** API 2.80.0: one page of the finance employee's closed tasks (history with search). */
     private const HISTORY_PAGE = 50;
 
@@ -205,7 +207,7 @@ final readonly class FinanceVerificationRequests
      *
      * @return string `created` or `exists` (an open request of the order, or the same key, already exists)
      */
-    private function create(string $requesterUuid, array $row, SourceAccessTarget $target, string $ledger, string $role, string $key, string $requestId, ?string $reasonCode): string
+    private function create(string $requesterUuid, array $row, SourceAccessTarget $target, string $ledger, string $role, string $key, string $requestId, ?string $reasonCode, ?string $assignTo = null): string
     {
         $summary = $this->summary($target, $row, $requesterUuid, $role, $requestId, $failure);
         if ($reasonCode !== null) {
@@ -244,7 +246,7 @@ final readonly class FinanceVerificationRequests
                 return 'exists';
             }
             $policy = $ledger === self::LEDGER_SHOP && $target->allowsSingleVerification() && ($summary['capabilities']['verification'] ?? 'four_eyes') === 'single' ? 'single' : 'four_eyes';
-            $assignee = $this->leastLoaded((string) $row['source_key'], $policy);
+            $assignee = $assignTo ?? $this->leastLoaded((string) $row['source_key'], $policy);
             $state = $assignee === null ? 'requested' : 'assigned';
             $this->pdo->prepare('INSERT INTO finance_verification_requests (request_uuid, order_uuid, global_order_id, source_key, purpose, state, version, open_order_uuid, assigned_employee_uuid, assigned_at,
                     requested_by_employee_uuid, requested_at, request_idempotency_key, ledger, proforma_series, proforma_number, updated_at)
@@ -310,6 +312,116 @@ final readonly class FinanceVerificationRequests
     }
 
     // ---- Finance employee -------------------------------------------------------------------------------------------
+
+    /**
+     * API 2.82.0 (Operation Simplification V1, owner decision 2026-11-26): the finance employee finds any order of her shops
+     * by order number or proforma number, with or without a task (an operator may simply tell her the customer paid).
+     * At most LOOKUP_LIMIT rows: the order, its shop, the latest proforma Arasya knows, the latest task and its state.
+     *
+     * @return array{items: list<array<string, mixed>>}
+     */
+    public function lookup(EmployeeIdentity $actor, mixed $query): array
+    {
+        $this->requireStaff($actor);
+        $sources = $this->financeSources($actor);
+        if ($sources === []) {
+            throw new ApiException(403, 'FINANCE_SCOPE_DENIED', 'You have no finance scope.');
+        }
+        $q = is_string($query) ? trim($query) : '';
+        if (preg_match('/^[A-Za-z]{0,10}[\s-]*0*([0-9]{1,12})$/D', $q, $m) !== 1) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'Search by an order number or a proforma number.', ['field' => 'q']);
+        }
+        $digits = $m[1];
+        $in = implode(', ', array_fill(0, count($sources), '?'));
+        $statement = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.payment_method, o.source_financial_state,
+                r.request_uuid, r.state, r.proforma_series, r.proforma_number, r.assigned_employee_uuid, e.display_name AS assignee
+            FROM operational_orders o
+            LEFT JOIN finance_verification_requests r ON r.request_uuid = (SELECT r2.request_uuid FROM finance_verification_requests r2 WHERE r2.order_uuid = o.order_uuid ORDER BY r2.requested_at DESC LIMIT 1)
+            LEFT JOIN employees e ON e.employee_uuid = r.assigned_employee_uuid
+            WHERE o.source_key IN ({$in}) AND o.workflow_cohort = 'confirmare' AND (o.order_number = ? OR EXISTS (SELECT 1 FROM finance_verification_requests p
+                WHERE p.order_uuid = o.order_uuid AND p.proforma_number IS NOT NULL AND TRIM(LEADING '0' FROM p.proforma_number) = ?))
+            ORDER BY o.created_at DESC LIMIT " . self::LOOKUP_LIMIT);
+        $statement->execute([...$sources, $digits, ltrim($digits, '0') === '' ? '0' : ltrim($digits, '0')]);
+        return ['items' => array_map(static fn (array $row): array => [
+            'globalOrderId' => (string) $row['global_order_id'],
+            'orderNumber' => (string) $row['order_number'],
+            'sourceKey' => (string) $row['source_key'],
+            'cod' => $row['payment_method'] === 'cod',
+            'financialState' => $row['source_financial_state'],
+            'proforma' => $row['proforma_number'] === null ? null : ['series' => $row['proforma_series'], 'number' => (string) $row['proforma_number']],
+            'task' => $row['request_uuid'] === null ? null : ['id' => (string) $row['request_uuid'], 'state' => (string) $row['state'], 'assignee' => $row['assignee'],
+                'mine' => $row['assigned_employee_uuid'] === $actor->employeeUuid],
+        ], $statement->fetchAll(PDO::FETCH_ASSOC))];
+    }
+
+    public const LOOKUP_LIMIT = 20;
+
+    /**
+     * API 2.82.0: the finance employee starts (or continues) the payment check of an order herself, without an operator's
+     * request and whenever she wants, also minutes after her "NU". Answers the task to open:
+     * - an open task of the order assigned to her: that one;
+     * - an open task not yet being checked by a colleague (requested, assigned): it moves to her (audited);
+     * - a colleague is checking it right now: refused (FINANCE_REQUEST_BUSY), nothing is overwritten;
+     * - no open task: a new one assigned to her, after the same shop read as every task (a valid advance proforma, something
+     *   due; a covered order is refused). Earlier tasks and their decisions stay as they are (the history is kept).
+     *
+     * @param array<string, mixed> $input {globalOrderId}
+     * @return array{requestId: string, created: bool}
+     */
+    public function checkOrder(EmployeeIdentity $actor, array $input, string $key, string $requestId): array
+    {
+        $this->requireStaff($actor);
+        $this->requireKey($key);
+        if (array_diff(array_keys($input), ['globalOrderId']) !== [] || !is_string($input['globalOrderId'] ?? null)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'globalOrderId is required.');
+        }
+        $row = $this->order($this->globalId((string) $input['globalOrderId']));
+        if ($row === null || !in_array((string) $row['source_key'], $this->financeSources($actor), true)) {
+            throw new ApiException(404, 'FINANCE_REQUEST_NOT_FOUND', 'No order was found.');
+        }
+        $open = $this->openFor((string) $row['order_uuid']);
+        if ($open !== null) {
+            if ($open['assigned_employee_uuid'] === $actor->employeeUuid) {
+                return ['requestId' => (string) $open['request_uuid'], 'created' => false];
+            }
+            if ($open['state'] === 'checking' || $open['finance_idempotency_key'] !== null || $open['source_entry_id'] !== null || !in_array($open['state'], ['requested', 'assigned', 'needs_clarification'], true)) {
+                throw new ApiException(409, 'FINANCE_REQUEST_BUSY', 'A colleague is checking this payment right now.');
+            }
+            $moved = false;
+            $this->locked((string) $open['request_uuid'], function (array $locked) use ($actor, $key, $requestId, &$moved): void {
+                if (!in_array($locked['state'], ['requested', 'assigned', 'needs_clarification'], true) || $locked['finance_idempotency_key'] !== null || $locked['source_entry_id'] !== null) {
+                    return;
+                }
+                $this->transition($locked, 'assigned', 'reassigned', $actor->employeeUuid, null, 'finance_self_check', $key, $requestId, $this->now(),
+                    ['assigned_employee_uuid' => $actor->employeeUuid, 'assigned_at' => $this->now()]);
+                $moved = true;
+            });
+            if ($moved !== true) {
+                throw new ApiException(409, 'FINANCE_REQUEST_BUSY', 'A colleague is checking this payment right now.');
+            }
+            return ['requestId' => (string) $open['request_uuid'], 'created' => false];
+        }
+        $target = $this->registry->find((string) $row['source_key']);
+        if ($target === null || !$target->allowsFinanceRecord()) {
+            throw new ApiException(409, 'FINANCE_DISABLED', 'Finance is not enabled for this shop.');
+        }
+        $this->requireRequestable($row);
+        $created = $this->create($actor->employeeUuid, $row, $target, self::LEDGER_SHOP, ConfirmareFinance::ROLE_FINANCE, $key, $requestId, 'finance_self_check', $actor->employeeUuid);
+        $request = $this->openFor((string) $row['order_uuid']);
+        if ($request === null) {
+            throw new ApiException(503, 'FINANCE_REQUEST_UNAVAILABLE', 'The task could not be opened. Try again.');
+        }
+        return ['requestId' => (string) $request['request_uuid'], 'created' => $created === 'created'];
+    }
+
+    /** @return list<string> the shops in which the actor records or verifies payments */
+    private function financeSources(EmployeeIdentity $actor): array
+    {
+        $statement = $this->pdo->prepare("SELECT DISTINCT source_key FROM employee_finance_scopes WHERE employee_uuid = ? AND capability IN ('record', 'verify') ORDER BY source_key");
+        $statement->execute([$actor->employeeUuid]);
+        return array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN));
+    }
+
 
     /**
      * The finance employee's own tasks: the tasks assigned to them and the second checks they are the named checker of
@@ -484,6 +596,10 @@ final readonly class FinanceVerificationRequests
         $outcome = $input['outcome'] ?? null;
         if ($outcome === 'not_received' || $outcome === 'needs_clarification') {
             $reasons = $outcome === 'not_received' ? self::NOT_RECEIVED_REASONS : self::CLARIFICATION_REASONS;
+            // API 2.82.0 (Operation Simplification V1): "NU" needs no reason; the payment was not found at this moment.
+            if ($outcome === 'not_received' && !array_key_exists('reasonCode', $input)) {
+                $input['reasonCode'] = 'not_found';
+            }
             return $this->financeCommand($actor, $requestUuid, $input, ['expectedVersion', 'outcome', 'reasonCode'], $key, function (array $request, string $now) use ($actor, $outcome, $reasons, $input, $key, $requestId): void {
                 if (!in_array($input['reasonCode'] ?? null, $reasons, true)) {
                     throw new ApiException(422, 'FINANCE_REQUEST_INVALID', 'reasonCode is not valid.', ['field' => 'reasonCode']);
@@ -1199,7 +1315,7 @@ final readonly class FinanceVerificationRequests
             'decidedAt' => $row['decided_at'] === null ? null : self::iso((string) $row['decided_at']),
             // API 2.80.0: the employee's own decision (Finalizate azi), and for a payment not found the next check.
             'decidedByMe' => $row['decided_by_employee_uuid'] === $actor->employeeUuid,
-            'recheckAt' => $row['state'] === 'not_received' && $row['decided_at'] !== null ? self::iso($this->sql(self::recheckAfter((string) $row['decided_at']))) : null,
+            'recheckAt' => self::AUTO_RECHECK && $row['state'] === 'not_received' && $row['decided_at'] !== null ? self::iso($this->sql(self::recheckAfter((string) $row['decided_at']))) : null,
         ] + (array_key_exists('amount_read_at', $row) ? [
             // API 2.77.9: the advance the shop last showed (null: never read yet). The task screen reads it again live.
             'advance' => $row['amount_read_at'] === null ? null : [
@@ -1212,6 +1328,34 @@ final readonly class FinanceVerificationRequests
             // When the customer placed the order (the shop's submission time), for the list's order date.
             'orderedAt' => ($row['ordered_at'] ?? null) === null ? null : self::iso((string) $row['ordered_at']),
         ] : []);
+    }
+
+    /**
+     * API 2.82.0 (Operation Simplification V1): the customer refused the order (the operator's red decision). The order's open
+     * finance tasks that hold no money step are withdrawn (`cancelled`, reason `customer_withdrew`, audited as the operator's),
+     * so nobody keeps looking for a payment that will not come. A task in the middle of a check, or one that already sent a
+     * finance action to the shop, is never touched: the answer is false and the cancellation waits for it.
+     * The caller holds the order row lock.
+     */
+    public static function withdrawForRefusal(PDO $pdo, string $orderUuid, string $actorUuid, string $now, string $requestId): bool
+    {
+        $statement = $pdo->prepare('SELECT * FROM finance_verification_requests WHERE open_order_uuid = ? FOR UPDATE');
+        $statement->execute([$orderUuid]);
+        $open = $statement->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($open as $request) {
+            if (!in_array($request['state'], ['requested', 'assigned', 'needs_clarification'], true) || $request['finance_idempotency_key'] !== null || $request['source_entry_id'] !== null) {
+                return false;
+            }
+        }
+        foreach ($open as $request) {
+            $version = (int) $request['version'] + 1;
+            $pdo->prepare("UPDATE finance_verification_requests SET state = 'cancelled', version = ?, updated_at = ?, open_order_uuid = NULL, reason_code = 'customer_withdrew' WHERE request_uuid = ? AND version = ?")
+                ->execute([$version, $now, (string) $request['request_uuid'], (int) $request['version']]);
+            $pdo->prepare('INSERT INTO finance_verification_request_events (event_uuid, request_uuid, version_after, action, actor_employee_uuid, previous_state, new_state, assigned_employee_uuid, outcome, reason_code, policy, idempotency_key, request_id, occurred_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')->execute([Uuid::v4(), (string) $request['request_uuid'], $version, 'cancelled', $actorUuid, (string) $request['state'], 'cancelled',
+                    $request['assigned_employee_uuid'], null, 'customer_withdrew', $request['policy'], null, self::cleanRequestId($requestId), $now]);
+        }
+        return true;
     }
 
     /** API 2.80.0: when a payment not found at $decidedSql (UTC) is looked for again: the next day, RECHECK_HOUR Bucharest. */
@@ -2153,7 +2297,9 @@ final readonly class FinanceVerificationRequests
         $now = $this->clock->now();
         $candidates = [];
         foreach ($recheck->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            if (self::recheckAfter((string) $row['decided_at']) <= $now) {
+            // API 2.82.0 (owner decision 2026-11-26): no automatic next-morning recheck; the finance employee opens the order
+            // again whenever she wants (checkOrder). The old rule stays readable here, switched off.
+            if (self::AUTO_RECHECK && self::recheckAfter((string) $row['decided_at']) <= $now) {
                 $candidates[] = ['order' => (string) $row['order_uuid'], 'key' => 'auto-recheck-' . str_replace('-', '', (string) $row['request_uuid']), 'reason' => 'auto_recheck'];
             }
         }

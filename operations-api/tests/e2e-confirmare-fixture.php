@@ -118,6 +118,17 @@ if ($change !== null) {
     exit(0);
 }
 
+// Staff 2.57.0 (Operation Simplification V1): `--desk` adds three fresh cash-on-delivery orders (91201-91203) for the desk
+// spec, after the main seed (the people and the activation exist). Unassigned: opening an order on the desk takes it.
+if (in_array('--desk', $argv, true)) {
+    foreach (['91201', '91202', '91203'] as $index => $deskNumber) {
+        $ingest('trendhome', $order($deskNumber, $now->modify('-' . (40 - $index) . ' minutes'), ['payment' => 'cod']));
+    }
+    $writeShop();
+    echo json_encode(['orders' => ['first' => 'trendhome:91201', 'second' => 'trendhome:91202', 'third' => 'trendhome:91203']]), "\n";
+    exit(0);
+}
+
 $cutover = \Arasya\Operations\Production\WorkflowCohort::cutover();
 if ($now < $cutover->modify('+10 minutes')) {
     echo json_encode(['skip' => 'The clock is before the Confirmare cutover.']), "\n";

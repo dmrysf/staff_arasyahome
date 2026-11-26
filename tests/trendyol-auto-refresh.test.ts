@@ -331,8 +331,10 @@ test("automatic refresh is limited to the Trendyol and Confirmare screens; the p
   // Staff 2.51.0: the finance holds review list only reads (financeReview); placing and releasing a hold are explicit clicks.
   // Staff 2.53.0: the Contabilitate desk reads the same task list (financeInbox) and one task (financeTask); the automatic
   // "Kontrole başla" and every decision run only from the check, never from a refresh.
+  // Staff 2.57.0 (Operation Simplification V1): the operator desk's four lists are one read (desk) every 15 seconds; every
+  // decision is an explicit click in the order editor, which itself never refreshes under the operator.
   assert.deepEqual(users.map((file) => path.relative(root, file)).sort(), [
-    "features/confirmare/ConfirmareBankCheck.tsx", "features/confirmare/ConfirmareFinanceHolds.tsx", "features/confirmare/ConfirmareFinanceScreen.tsx", "features/confirmare/ConfirmareHandoffScreen.tsx", "features/confirmare/ConfirmareOrderScreen.tsx", "features/confirmare/ConfirmareShopTasks.tsx", "features/confirmare/ConfirmareTeamScreen.tsx", "features/confirmare/FinanceDesk.tsx", "features/confirmare/FinanceRequestScreens.tsx", "features/confirmare/OperatorDesk.tsx",
+    "features/confirmare/ConfirmareBankCheck.tsx", "features/confirmare/ConfirmareFinanceHolds.tsx", "features/confirmare/ConfirmareFinanceScreen.tsx", "features/confirmare/ConfirmareHandoffScreen.tsx", "features/confirmare/ConfirmareOrderScreen.tsx", "features/confirmare/ConfirmareShopTasks.tsx", "features/confirmare/ConfirmareTeamScreen.tsx", "features/confirmare/DecisionDesk.tsx", "features/confirmare/FinanceDesk.tsx", "features/confirmare/FinanceRequestScreens.tsx", "features/confirmare/OperatorDesk.tsx",
     "features/trendyol/TrendyolInboxScreen.tsx", "features/workspaces/TrendyolDashboard.tsx",
     "features/workspaces/refreshScheduler.ts", "features/workspaces/useAutoRefresh.ts",
   ]);

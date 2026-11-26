@@ -1,9 +1,37 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-063 disposable test fixture (no yellow mark, decision follow-ups or desk display copy; the 036 CHECKs). NOT a deployment/rollback mechanism. */
+function restorePreOperationSimplificationTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='063_operation_simplification.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS confirmare_decision_followups');
+    $pdo->exec('DROP TABLE IF EXISTS confirmare_order_display');
+    $constraint = static fn (string $table, string $name): bool => (bool) $pdo->query("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = '{$table}' AND constraint_name = '{$name}'")->fetchColumn();
+    if ((bool) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_confirmations' AND column_name = 'hold_at'")->fetchColumn()) {
+        $pdo->exec('ALTER TABLE order_confirmations DROP FOREIGN KEY fk_order_confirmations_hold_by');
+        $pdo->exec('ALTER TABLE order_confirmations DROP CONSTRAINT chk_order_confirmations_hold');
+        $pdo->exec('ALTER TABLE order_confirmations DROP KEY idx_order_confirmations_hold, DROP COLUMN hold_at, DROP COLUMN hold_by_employee_uuid, DROP COLUMN hold_note, DROP COLUMN callback_at');
+    }
+    foreach ([['order_confirmation_events', 'chk_order_confirmation_events_action_063', 'chk_order_confirmation_events_action', "action IN ('opened', 'assigned', 'claimed', 'released', 'reassigned', 'approved', 'rejected', 'reopened')"],
+        ['order_confirmation_events', 'chk_order_confirmation_events_system_063', 'chk_order_confirmation_events_system', "actor_kind = 'employee' OR action IN ('opened', 'assigned', 'released')"],
+        ['order_confirmation_idempotency', 'chk_order_confirmation_idempotency_operation_063', 'chk_order_confirmation_idempotency_operation', "operation IN ('next', 'claim', 'release', 'reassign', 'approve', 'reject', 'reopen', 'availability')"]] as [$table, $new, $old, $check]) {
+        if ($constraint($table, $new)) {
+            $pdo->exec("DELETE FROM {$table} WHERE NOT ({$check})");
+            $pdo->exec("ALTER TABLE {$table} DROP CONSTRAINT {$new}");
+        }
+        if (!$constraint($table, $old)) {
+            $pdo->exec("ALTER TABLE {$table} ADD CONSTRAINT {$old} CHECK ({$check})");
+        }
+    }
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='063_operation_simplification.sql'");
+}
+
 /** Restore a pre-062 disposable test fixture (no display copy columns, no source_access_timings). NOT a deployment/rollback mechanism. */
 function restorePreFinanceDisplayTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreOperationSimplificationTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='062_finance_display_and_source_timings.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS source_access_timings');
     if ((bool) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'finance_task_amounts' AND column_name = 'display_json'")->fetchColumn()) {

@@ -5,7 +5,7 @@ import { sourceLabel, type ConfirmareApi, type ConfirmareSource } from "../../do
 import { formatFinanceMoney, normalizeAmount, validReference } from "../../domain/confirmareFinance";
 import {
   CLARIFICATION_REASONS, canOverseeFinance, financeOrderPath, financeTaskPath, maskIban, oversightPath, proformaLabel, reasonLabel, requestErrorKey, stateLabel, taskCodeLabel, taskOrderId,
-  type ClarificationReason, type DecisionAnswer, type FinanceTask, type Inbox, type InboxItem, type Transfer,
+  type ClarificationReason, type DecisionAnswer, type FinanceLookupItem, type FinanceTask, type Inbox, type InboxItem, type Transfer,
 } from "../../domain/financeRequests";
 import {
   answerLost, bani, bucharestClock, checkEntry, checkMoney, checkPayment, deskRows, deskSourceFilter, deskable, fromBani, nextDeskTask, noteDeskDone, paymentEffect, setDeskSourceFilter, takeDeskDone, validValueDate, waitParts,
@@ -93,6 +93,7 @@ export function FinanceDeskScreen({ employee, service, navigate }: { employee: E
           <input type="search" inputMode="search" autoComplete="off" placeholder={t("fd.search.placeholder")} value={query} onChange={(event) => setQuery(event.target.value)} data-testid="fd-search" /></label>
         <SourceFilter sources={SOURCES} value={source} onChange={chooseSource} />
       </div>
+      <OrderLookup service={service} navigate={navigate} />
       {finished && <Notice tone="success" role="status" testId="fd-done">{t("fd.next.done", { order: finished })} {t("fd.next.none")}</Notice>}
       {inbox.error && (!data || inbox.stopped) && <Notice tone="danger" role="alert">{errorText(inbox.error)}</Notice>}
       {!data && !inbox.error && <QueueSkeleton />}
@@ -106,6 +107,56 @@ export function FinanceDeskScreen({ employee, service, navigate }: { employee: E
       </div>
       {data && data.items.length >= data.limit && <p className="dashboard-footnote">{t("fd.limit")}</p>}
     </article>
+  );
+}
+
+/**
+ * Staff 2.57.0 (Operation Simplification V1): the finance employee finds ANY order of her shops by its order or proforma
+ * number and checks the payment herself: with or without a task, minutes after her "NU" too. The server answers the task
+ * to open (hers, a free one moved to her, or a new one assigned to her); a colleague's check in progress is never taken.
+ */
+function OrderLookup({ service, navigate }: { service: ConfirmareApi; navigate: (path: string) => void }) {
+  const { t } = useI18n();
+  const errorText = useErrorText();
+  const [query, setQuery] = useState("");
+  const [items, setItems] = useState<FinanceLookupItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const keys = useRef<Record<string, string>>({});
+  const search = async (event: FormEvent) => {
+    event.preventDefault();
+    if (query.trim() === "") return;
+    setError(null); setBusy("search");
+    try { setItems(await service.financeLookup(query.trim())); } catch (caught) { setItems(null); setError(errorText(caught)); } finally { setBusy(null); }
+  };
+  const check = async (item: FinanceLookupItem) => {
+    setError(null); setBusy(item.globalOrderId);
+    keys.current[item.globalOrderId] ??= createIdempotencyKey();
+    try {
+      const answer = await service.financeCheckOrder(item.globalOrderId, keys.current[item.globalOrderId]);
+      delete keys.current[item.globalOrderId];
+      navigate(financeTaskPath(answer.requestId));
+    } catch (caught) { setError(errorText(caught)); } finally { setBusy(null); }
+  };
+  return (
+    <section className="fd-lookup" aria-labelledby="fd-lookup-title" data-testid="fd-lookup">
+      <h2 id="fd-lookup-title">{t("fd.search.title")}</h2>
+      <form className="fd-lookup-form" onSubmit={(event) => { void search(event); }}>
+        <label className="fd-search"><AppIcon name="search" size={18} /><span className="visually-hidden">{t("fd.search.title")}</span>
+          <input type="search" inputMode="search" autoComplete="off" maxLength={30} placeholder={t("fd.search.placeholder")} value={query} onChange={(event) => setQuery(event.target.value)} data-testid="fd-lookup-input" /></label>
+        <button type="submit" className="button button-secondary" disabled={busy !== null || query.trim() === ""} data-testid="fd-lookup-search">{t("common.search")}</button>
+      </form>
+      {error && <Notice tone="danger" role="alert">{error}</Notice>}
+      {items && items.length === 0 && <p className="fd-empty">{t("fd.search.none")}</p>}
+      {items && items.length > 0 && <ul className="fd-lookup-list">{items.map((item) => (
+        <li key={item.globalOrderId} data-testid={`fd-lookup-${item.orderNumber}`}>
+          <strong className="mono">#{item.orderNumber}</strong> <span className="cf-source">{sourceLabel(item.sourceKey)}</span>
+          {item.proforma && <span className="mono"> · {proformaLabel(item.proforma)}</span>}
+          {item.task && <small> · {item.task.mine ? stateLabel(item.task.state as never) : t("fd.search.taskOf", { name: item.task.assignee ?? "—" })}</small>}
+          <button type="button" className="button fd-yes" disabled={busy !== null || !item.cod} onClick={() => { void check(item); }} data-testid={`fd-lookup-check-${item.orderNumber}`}>{t("fd.search.check")}</button>
+        </li>
+      ))}</ul>}
+    </section>
   );
 }
 
@@ -193,7 +244,6 @@ function DeskRow({ item, now, navigate }: { item: InboxItem; now: number; naviga
 type Step =
   | { kind: "question" }
   | { kind: "payment"; form: PaymentForm }
-  | { kind: "summary"; form: PaymentForm; input: PaymentInput; effect: PaymentEffect }
   | { kind: "no" }
   | { kind: "no-summary"; outcome: "not_received" }
   | { kind: "no-summary"; outcome: "needs_clarification"; reason: ClarificationReason };
@@ -213,6 +263,8 @@ export function FinanceCheckScreen({ requestId, service, navigate }: { requestId
   const [done] = useState(() => takeDeskDone());
   const [starting, setStarting] = useState(false);
   const intent = useRef<{ id: string; key: string } | null>(null);
+  // Staff 2.57.0: the payment the employee confirmed, kept for a replay with the same key after a lost answer.
+  const lastPayment = useRef<PaymentInput | null>(null);
   const started = useRef<string | null>(null);
   const keyFor = (id: string) => { if (intent.current?.id !== id) intent.current = { id, key: createIdempotencyKey() }; return intent.current.key; };
   const entry = task ? checkEntry(task) : null;
@@ -292,7 +344,8 @@ export function FinanceCheckScreen({ requestId, service, navigate }: { requestId
   const reference = live?.paymentReference ?? null;
   const money = checkMoney(task);
   const canMatch = live?.capabilities.match ?? false;
-  const number = step.kind === "question" || step.kind === "no" ? (step.kind === "no" ? 2 : 1) : step.kind === "payment" ? 2 : 3;
+  // Staff 2.57.0 (Operation Simplification V1): two steps. 1: "A fost primită plata?" (NU records it at once); 2: the payment.
+  const number = step.kind === "question" ? 1 : 2;
   const tone = step.kind === "no" || step.kind === "no-summary" ? (step.kind === "no-summary" && step.outcome === "needs_clarification" ? "warning" : "danger") : "success";
   const blocked = Boolean(live?.proformaChanged);
   const waiting = busy || starting;
@@ -304,7 +357,7 @@ export function FinanceCheckScreen({ requestId, service, navigate }: { requestId
       if (intent.current) {
         // Same key again: the server answers with the stored result of the first send.
         const pending = intent.current.id;
-        if (pending.startsWith("verified|") && step.kind === "summary" && live) return send(task, pending, (key) => service.decideTask(request.id, { expectedVersion: request.version, outcome: "verified", expectedRevision: live.revision, currency, ...step.input }, key));
+        if (pending.startsWith("verified|") && lastPayment.current && live) { const input = lastPayment.current; return send(task, pending, (key) => service.decideTask(request.id, { expectedVersion: request.version, outcome: "verified", expectedRevision: live.revision, currency, ...input }, key)); }
         if (pending.startsWith("nr|")) return send(task, pending, (key) => service.decideTask(request.id, { expectedVersion: request.version, outcome: "not_received", reasonCode: "not_found" }, key));
         if (pending.startsWith("nc|") && step.kind === "no-summary" && step.outcome === "needs_clarification") return send(task, pending, (key) => service.decideTask(request.id, { expectedVersion: request.version, outcome: "needs_clarification", reasonCode: step.reason }, key));
       }
@@ -349,23 +402,22 @@ export function FinanceCheckScreen({ requestId, service, navigate }: { requestId
         <h2 className="fd-question">{t("fd.q.received")}</h2>
         <div className="fd-choice">
           <button type="button" className="button fd-yes" disabled={waiting || !live || blocked || !task.allowed.verify} onClick={() => setStep({ kind: "payment", form: EMPTY_FORM })} data-testid="fr-mode-verified"><AppIcon name="check" size={22} />{t("fd.yes")}</button>
-          <button type="button" className="button fd-no" disabled={waiting || !(task.allowed.notReceived || task.allowed.clarify)} onClick={() => setStep({ kind: "no" })} data-testid="fr-mode-not-received"><AppIcon name="close" size={22} />{t("fd.no")}</button>
+          <button type="button" className="button fd-no" disabled={waiting || !task.allowed.notReceived}
+            onClick={() => void send(task, `nr|${request.version}|not_found`, (key) => service.decideTask(request.id, { expectedVersion: request.version, outcome: "not_received", reasonCode: "not_found" }, key))}
+            data-testid="fr-mode-not-received"><AppIcon name="close" size={22} />{t("fd.no")}</button>
         </div>
+        <p className="fd-no-hint">{t("fd.no.anytime")}</p>
+        {task.allowed.clarify && <button type="button" className="button button-ghost" disabled={waiting} onClick={() => setStep({ kind: "no" })} data-testid="fr-mode-clarify-open">{t("fd.no.clarify")}</button>}
         {!live && <button type="button" className="button button-secondary" onClick={view.refresh}>{t("fd.retry")}</button>}
       </section>}
 
       {step.kind === "payment" && live && <PaymentStep form={step.form} currency={currency} money={money} reference={reference} canMatch={canMatch} busy={busy}
         onBack={() => setStep({ kind: "question" })}
-        onReady={(form, input, effect) => setStep({ kind: "summary", form, input, effect })}
+        onReady={(form, input) => { void form; lastPayment.current = input; void send(task, `verified|${request.version}|${input.amount}|${input.reference}|${input.valueDate}`,
+          (key) => service.decideTask(request.id, { expectedVersion: request.version, outcome: "verified", expectedRevision: live.revision, currency, ...input }, key)); }}
         onClarify={(form, reason) => { void form; setStep({ kind: "no-summary", outcome: "needs_clarification", reason }); }} />}
 
-      {step.kind === "summary" && live && <SummaryStep order={request.orderNumber} currency={currency} money={money} input={step.input} effect={step.effect} busy={busy}
-        onBack={() => setStep({ kind: "payment", form: step.form })}
-        onConfirm={() => void send(task, `verified|${request.version}|${step.input.amount}|${step.input.reference}|${step.input.valueDate}`,
-          (key) => service.decideTask(request.id, { expectedVersion: request.version, outcome: "verified", expectedRevision: live.revision, currency, ...step.input }, key))} />}
-
-      {step.kind === "no" && <NoStep busy={busy} notReceived={task.allowed.notReceived} clarify={task.allowed.clarify} onBack={() => setStep({ kind: "question" })}
-        onNotReceived={() => setStep({ kind: "no-summary", outcome: "not_received" })}
+      {step.kind === "no" && <NoStep busy={busy} clarify={task.allowed.clarify} onBack={() => setStep({ kind: "question" })}
         onClarify={(reason) => setStep({ kind: "no-summary", outcome: "needs_clarification", reason })} />}
 
       {step.kind === "no-summary" && <section className={`fd-panel tone-${tone}`} data-testid="fr-confirm">
@@ -471,9 +523,10 @@ function PaymentStep({ form: initial, currency, money, reference, canMatch, busy
         <p>{problem.text}</p>
         {problem.clarify && <button type="button" className="button fd-warn" disabled={busy} onClick={() => onClarify(form, problem.clarify as ClarificationReason)} data-testid="fd-to-clarification">{t("fd.pay.toClarification")}</button>}
       </div>}
+      <p className="fd-declaration" data-testid="fd-declaration">{t("fd.pay.declaration")}</p>
       <div className="fd-actions">
         <button type="button" className="button button-secondary" disabled={busy} onClick={onBack} data-testid="fd-back">{t("fd.stepBack")}</button>
-        <button type="submit" className="button button-primary" disabled={busy} data-testid="fr-verify-next">{t("fd.continue")}<AppIcon name="arrow" size={20} /></button>
+        <button type="submit" className="button fd-yes fd-confirm" disabled={busy} data-testid="fr-verify-next">{busy ? t("fd.sending") : t("fd.pay.confirmContinue")}<AppIcon name="arrow" size={20} /></button>
       </div>
     </form>
   );
@@ -482,41 +535,9 @@ function PaymentStep({ form: initial, currency, money, reference, canMatch, busy
 const matchText = (input: { matchBasis?: string | null; payerName?: string | null; payer?: string | null }, t: (key: MessageKey) => string): string =>
   input.matchBasis && input.matchBasis !== "proforma_reference" ? `${t(`fd.match.${input.matchBasis}` as MessageKey)} · ${input.payerName ?? input.payer ?? ""}` : t("fd.match.proforma_reference");
 
-/** Step 3: the last check, one green button. Confirming also accepts the real advance (no second acceptance). */
-function SummaryStep({ order, currency, money, input, effect, busy, onBack, onConfirm }: {
-  order: string; currency: string; money: CheckMoney; input: PaymentInput; effect: PaymentEffect; busy: boolean; onBack: () => void; onConfirm: () => void;
-}) {
-  const { t } = useI18n();
-  const [statement, setStatement] = useState(false);
-  const [problem, setProblem] = useState(false);
-  return (
-    <section className="fd-panel" data-testid="fr-confirm">
-      <h2>{t("fd.sum.title")}</h2>
-      <dl className="fd-summary" data-testid="fr-confirm-text">
-        <div><dt>{t("fd.fact.order")}</dt><dd className="mono">#{order}</dd></div>
-        <div><dt>{t("fd.money.total")}</dt><dd>{formatFinanceMoney(money.total, currency)}</dd></div>
-        <div className="fd-amount"><dt>{t("fd.sum.received")}</dt><dd data-testid="fd-received">{formatFinanceMoney(input.amount, currency)}</dd></div>
-        <div><dt>{t("fd.money.received")}</dt><dd data-testid="fd-total-received">{formatFinanceMoney(effect.totalReceived, currency)}</dd></div>
-        <div className="fd-amount tone-accent"><dt>{t("fd.money.ramburs")}</dt><dd data-testid="fd-ramburs">{formatFinanceMoney(effect.ramburs, currency)}</dd></div>
-        <div><dt>{t("fd.money.gap")}</dt><dd data-testid="fd-gap">{effect.overAdvance ? `+${formatFinanceMoney(effect.overAdvance, currency)}` : formatFinanceMoney(effect.advanceGap, currency)}</dd></div>
-        <div><dt>{t("fd.sum.bankReference")}</dt><dd className="mono">{input.reference}</dd></div>
-        <div><dt>{t("fd.sum.date")}</dt><dd>{dueDay(input.valueDate)}</dd></div>
-        <div className="fd-wide"><dt>{t("fd.sum.match")}</dt><dd data-testid="fd-sum-match">{matchText(input, t)}</dd></div>
-      </dl>
-      <p className="fd-accept-note" data-testid="fd-sum-accept">{t("fd.sum.accept")}</p>
-      <label className="check-field fd-statement"><input type="checkbox" checked={statement} onChange={(event) => { setStatement(event.target.checked); setProblem(false); }} data-testid="fr-statement" />
-        <span className="cf-check">{t("fd.sum.statement")}<small>{t("fr.form.statementHint")}</small></span></label>
-      {problem && <Notice tone="danger" role="alert" testId="fr-form-problem">{t("fd.sum.statementRequired")}</Notice>}
-      <div className="fd-actions">
-        <button type="button" className="button button-secondary" disabled={busy} onClick={onBack} data-testid="fr-confirm-back">{t("fd.stepBack")}</button>
-        <button type="button" className="button fd-yes fd-confirm" disabled={busy} onClick={() => (statement ? onConfirm() : setProblem(true))} data-testid="fr-confirm-send">{busy ? t("fd.sending") : t("fd.confirm")}<AppIcon name="arrow" size={20} /></button>
-      </div>
-    </section>
-  );
-}
-
-function NoStep({ busy, notReceived, clarify, onBack, onNotReceived, onClarify }: {
-  busy: boolean; notReceived: boolean; clarify: boolean; onBack: () => void; onNotReceived: () => void; onClarify: (reason: ClarificationReason) => void;
+/** Staff 2.57.0: "NU" is recorded at once from step 1; this panel only asks for a clarification when something is unclear. */
+function NoStep({ busy, clarify, onBack, onClarify }: {
+  busy: boolean; clarify: boolean; onBack: () => void; onClarify: (reason: ClarificationReason) => void;
 }) {
   const { t } = useI18n();
   const [reasons, setReasons] = useState(false);
@@ -524,7 +545,6 @@ function NoStep({ busy, notReceived, clarify, onBack, onNotReceived, onClarify }
     <section className="fd-panel" data-testid="fr-reason-form">
       <h2>{t("fd.no.title")}</h2>
       {!reasons && <div className="fd-options">
-        <button type="button" className="fd-option tone-danger" disabled={busy || !notReceived} onClick={onNotReceived} data-testid="fd-not-received"><strong>{t("fd.no.notReceived")}</strong><span>{t("fd.no.notReceivedHint")}</span></button>
         <button type="button" className="fd-option tone-warning" disabled={busy || !clarify} onClick={() => setReasons(true)} data-testid="fr-mode-clarify"><strong>{t("fd.no.clarify")}</strong><span>{t("fd.no.clarifyHint")}</span></button>
       </div>}
       {reasons && <fieldset className="fd-reasons"><legend>{t("fd.no.reason")}</legend>

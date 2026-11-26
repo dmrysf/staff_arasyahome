@@ -40,6 +40,8 @@ test.beforeAll(() => {
 const PICTURE = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGMQq+3EihiGlgQAoZ1HAURPiKQAAAAASUVORK5CYII=", "base64");
 async function signIn(browser: Browser, username: string, width = 390, height = 844) {
   const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
+  // Staff 2.57.0: these flows run on the detailed screen (the earlier desk); the new desk has its own spec.
+  await context.addInitScript(() => { try { window.sessionStorage.setItem("arasya.cf.detailed", "1"); } catch { /* no storage */ } });
   await context.route("https://127.0.0.1/wp-content/uploads/e2e/**", (route) => route.request().url().endsWith("/draperie-velvet.png")
     ? route.fulfill({ status: 200, contentType: "image/png", body: PICTURE })
     : route.fulfill({ status: 404, body: "" }));

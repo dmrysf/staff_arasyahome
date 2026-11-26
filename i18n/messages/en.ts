@@ -10,6 +10,7 @@ import { confirmareOpsEN } from "./confirmareOps";
 import { confirmareEditEN } from "./confirmareEdit";
 import { confirmareWorkflowEN } from "./confirmareWorkflow";
 import { operatorDeskEN } from "./operatorDesk";
+import { decisionDeskEN } from "./decisionDesk";
 import { officeHistoryEN } from "./officeHistory";
 import { myMetersEN } from "./myMeters";
 import { awbEntryEN } from "./awbEntry";
@@ -36,6 +37,7 @@ export const en: Catalog = {
   ...confirmareEditEN,
   ...confirmareWorkflowEN,
   ...operatorDeskEN,
+  ...decisionDeskEN,
   ...officeHistoryEN,
   ...myMetersEN,
   ...awbEntryEN,
