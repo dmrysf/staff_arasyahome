@@ -103,7 +103,27 @@ async function axe(page: Page) {
   expect(result.violations.map((violation) => `${violation.id}: ${violation.nodes.map((node) => node.target.join(" ")).slice(0, 3).join(" | ")}`)).toEqual([]);
 }
 
+/** API requests the page sent and that have not finished (the stall diagnosis below names them with their age). */
+function trackApi(page: Page): () => string[] {
+  const open = new Map<object, { url: string; at: number }>();
+  page.on("request", (request) => { if (/\/confirmare\//.test(request.url())) open.set(request, { url: `${request.method()} ${new URL(request.url()).pathname}`, at: Date.now() }); });
+  const done = (request: object) => open.delete(request);
+  page.on("requestfinished", done);
+  page.on("requestfailed", done);
+  return () => [...open.values()].map((entry) => `${entry.url} ${Math.round((Date.now() - entry.at) / 1000)}s`);
+}
+
+/** The PHP processes of the test servers with their kernel wait channel (which call a stalled worker sits in). */
+function phpProcesses(): string {
+  try {
+    return execFileSync("ps", ["-eo", "pid,ppid,stat,etime,wchan:24,pcpu,args"], { encoding: "utf8" }).split("\n").filter((line) => /php/.test(line) && !/ps -eo/.test(line)).map((line) => line.trim().replace(/\s+/g, " ")).join(" | ");
+  } catch (error) {
+    return `ps unavailable: ${String(error).slice(0, 80)}`;
+  }
+}
+
 async function openOrder(page: Page, globalId: string) {
+  const pending = trackApi(page);
   await page.goto(`/confirmare/orders/${encodeURIComponent(globalId)}`);
   await expect(page.getByTestId("dd-work")).toBeVisible();
   // The loopback TEST shop is one PHP process answering from one JSON file: on a busy CI runner a read can stall.
@@ -111,14 +131,15 @@ async function openOrder(page: Page, globalId: string) {
   try {
     await expect(page.getByTestId("dd-total")).toContainText(/\d/, { timeout: 20_000 });
   } catch {
-    // What the TEST database is doing while the read stalls (open transactions, lock waits): printed for the CI log.
+    // What the page waits for, the PHP servers' wait channels and the TEST database (transactions, lock waits): CI log.
+    console.log(`stalled read ${globalId}: pending=${JSON.stringify(pending())} php=${phpProcesses()}`);
     console.log(`stalled read ${globalId}: ${php(["--locks"]).trim()}`);
     await page.reload();
     await expect(page.getByTestId("dd-work")).toBeVisible();
     try {
       await expect(page.getByTestId("dd-total")).toContainText(/\d/, { timeout: 30_000 });
     } catch (error) {
-      console.log(`stalled again ${globalId}: ${php(["--locks"]).trim()}`);
+      console.log(`stalled again ${globalId}: pending=${JSON.stringify(pending())} php=${phpProcesses()}`);
       throw error;
     }
   }
