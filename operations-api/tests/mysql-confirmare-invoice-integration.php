@@ -1006,6 +1006,64 @@ $check((int) $one('SELECT COUNT(*) FROM order_invoice_auto_requests WHERE global
     && (int) $one('SELECT COUNT(*) FROM order_invoice_auto_requests WHERE global_order_id IN (' . implode(', ', array_fill(0, 8, '?')) . ')', $autoIds) === 7,
     'one request per printed order of the routed employee, never more');
 
+// ---- 8e. API 2.84.1 (owner approval 2026-11-27 "SYSTEM IDENTITY CORRECTION"): the system identity and the real employee ------
+// Root approved orders in a recovery; the system issues as root on behalf of the shop employee. "Whoever confirmed the order
+// never invoices it" applies to that real employee, never to the system identity; root's manual invoice keeps the rule.
+foreach (range(38, 40) as $n) {
+    $ok(T::ingest($kernel, 'trendhome', $payload($id($n), 300 + $n)), "trendhome order {$n} (system identity)");
+    $th->orders[$id($n)] = ['id' => $id($n), 'number' => $id($n), 'eligible' => true, 'phone' => INV_PHONE, 'pricing' => 'sha256:' . hash('sha256', 'inv-price-' . $id($n)), 'invoice' => ['cleared' => true, 'cod' => false]];
+}
+$service->distribute();
+foreach (range(38, 40) as $n) {
+    $approve($who['iop'], $g($n));
+    $ok($route($g($n)), "route {$n} to the shop employee");
+}
+$decided = static fn (string $gid, string $uuid) => $pdo->prepare('UPDATE order_confirmations c JOIN operational_orders o ON o.order_uuid = c.order_uuid SET c.decided_by_employee_uuid = ? WHERE o.global_order_id = ?')->execute([$uuid, $gid]);
+$decided($g(38), $systemUuid);
+$decided($g(39), $uuids['idoc']);
+$decided($g(40), $systemUuid);
+// H1. Root approved it: the automatic invoice for the shop employee is issued (once).
+$ticket($g(38));
+$h38 = $autoNow('idoc', $g(38));
+$rows38 = $sysActions($g(38));
+$check($h38['state'] === 'done' && $h38['outcome'] === 'issued' && $docsMade(38) === 1 && count($rows38) === 1 && $rows38[0]['employee_uuid'] === $systemUuid,
+    'root approved the order: the system still issues it for the shop employee: ' . json_encode([$h38, $rows38]));
+$q38 = $request($g(38));
+$check($q38['trigger_employee_uuid'] === $uuids['idoc'] && (string) $one('SELECT c.decided_by_employee_uuid FROM order_confirmations c JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE o.global_order_id = ?', [$g(38)]) === $systemUuid,
+    'the audit keeps the real approver (root), the employee who asked (trigger) and the system action apart');
+$due($g(38));
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$autoInvoice->run(10);
+$check($autoNow('idoc', $g(38))['state'] === 'done' && $docsMade(38) === 1 && count($sysActions($g(38))) === 1, 'root approved: never a second invoice');
+// H2. The shop employee confirmed the order: the system never issues it for that employee.
+$ticket($g(39));
+$h39 = $autoNow('idoc', $g(39));
+$due($g(39));
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$autoInvoice->run(10);
+$check(in_array($h39['state'], ['waiting', 'stopped'], true) && $h39['outcome'] === 'same_employee' && $docsMade(39) === 0 && $sysActions($g(39)) === [] && $request($g(39))['state'] !== 'done',
+    'the shop employee confirmed the order: the system does not invoice it for them: ' . json_encode($h39));
+// H3. Root's manual invoice keeps the rule (no general exemption), and only the system identity may read on someone's behalf.
+$rootDesk = $container->confirmareInvoice(null, true);
+$rootIdentity = $container->employeeRepository()->findByUuid($systemUuid);
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$rootRead = $rootDesk->read($rootIdentity, $g(40), 'test-root-read');
+$check(in_array('same_employee', $rootRead['blockers']['issue'] ?? [], true) && !in_array('issue', $rootRead['allowedActions'] ?? [], true), 'root approved it: root\'s own read still shows same_employee');
+$rootIssue = null;
+try {
+    $rootDesk->act($rootIdentity, $g(40), 'issue', ['expectedRevision' => (string) $rootRead['summary']['revision']], 'test-root-manual-issue-40', 'test-root-issue');
+} catch (ApiException $e) {
+    $rootIssue = $e->errorCode;
+}
+$check($rootIssue === 'CONFIRMARE_INVOICE_SAME_EMPLOYEE' && $docsMade(40) === 0 && $sysActions($g(40)) === [], 'root approved it: root\'s manual issue is refused (same employee): ' . json_encode($rootIssue));
+$behalf = null;
+try {
+    $container->confirmareInvoice()->read($container->employeeRepository()->findByUuid($uuids['imgr']), $g(40), 'test-behalf', $container->employeeRepository()->findByUuid($uuids['idoc']));
+} catch (ApiException $e) {
+    $behalf = $e->errorCode;
+}
+$check($behalf === 'CONFIRMARE_INVOICE_DENIED', 'only the system identity reads on behalf of an employee: ' . json_encode($behalf));
+
 // ---- 9. No link, number, amount or customer data in the audit or the log ----------------------------------------------------
 $dump = json_encode([$all('SELECT * FROM order_invoice_actions'), $all('SELECT * FROM order_invoice_reads'), $all("SELECT action, metadata_json FROM iam_audit_events WHERE action = 'employee.invoice_scopes_changed'")], JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);
 $check(!str_contains((string) $dump, 'smartbill.ro') && !str_contains((string) $dump, 'Factur') && !str_contains((string) $dump, '719.00') && preg_match('/0744\s?666\s?777|744666777/', (string) $dump) !== 1, 'the invoice audit holds codes and hashes only');
