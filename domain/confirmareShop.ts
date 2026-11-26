@@ -12,7 +12,13 @@ export type SourceAccessCapabilities = {
   changePending: boolean; openEdits: OpenEdit[];
 };
 
-export type ShopPerson = { name: string; company: string; phone: string; addressLines: string[] };
+/** API 2.82.0 (YD SOFT 2.35.0): the address fields an operator corrects in place; null from an older shop. */
+export const ADDRESS_FIELDS = ["firstName", "lastName", "company", "address1", "streetNo", "building", "entrance", "floor", "apartment", "address2", "city", "state", "postcode", "country"] as const;
+export type AddressField = (typeof ADDRESS_FIELDS)[number];
+export type AddressFields = Record<AddressField, string>;
+export type ShopPerson = { name: string; company: string; phone: string; addressLines: string[]; fields?: AddressFields | null };
+/** API 2.82.0 (YD SOFT 2.35.0): the product's stock as the shop knows it now; null from an older shop. */
+export type ShopStock = { status: "instock" | "outofstock" | "onbackorder" | "unknown"; managed: boolean; quantity: number | null };
 export type ShopDetailEntry = { label: string; value: string };
 /** API 2.51.0 (YD SOFT 2.24.0): the catalog picture of a line, the variation's own or else the product's; live, display only. */
 export type ShopLineImage = { url: string; width: number; height: number; kind: "variation" | "product" };
@@ -22,14 +28,20 @@ export type ShopLine = {
   quantity: number; unitPrice: string; subtotal: string; discount: string; tax: string; total: string; calculator: boolean;
   /** Null: no picture, a deleted product, or an older shop. */
   image: ShopLineImage | null;
+  stock?: ShopStock | null;
 };
 export type ShopTotals = { subtotal: string; discount: string; discountTax: string; shipping: string; shippingTax: string; fees: string; tax: string; total: string; refunded: string };
+export type ShopCustomerOrder = { number: string; createdAt: string | null; status: { code: string; label: string }; total: string; currency: string };
+export type ShopCustomer = { orders: ShopCustomerOrder[]; possibleDuplicates: string[] };
 export type ShopOrderDetail = {
   readAt: string;
   order: { id: string; number: string; status: { code: string; label: string }; createdAt: string | null; modifiedAt: string | null; storage: "hpos" | "posts"; currency: string; pricesIncludeTax: boolean };
   version: string;
   pricingFingerprint: string | null;
-  contact: { phoneAvailable: boolean; billing: ShopPerson; shipping: ShopPerson };
+  /** `email` (YD SOFT 2.35.0): the billing e-mail the proforma and invoice go to; null when none or an older shop. */
+  contact: { phoneAvailable: boolean; billing: ShopPerson; shipping: ShopPerson; email?: string | null };
+  /** YD SOFT 2.35.0: the customer's other orders of this shop and the possible duplicates (information only). */
+  customer?: ShopCustomer;
   lines: ShopLine[];
   fees: { name: string; total: string; tax: string }[];
   coupons: { code: string; discount: string; discountTax: string }[];

@@ -31,6 +31,8 @@ test.beforeAll(() => {
 
 async function signIn(browser: Browser, username: string, width = 390, height = 844) {
   const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
+  // Staff 2.57.0: these flows run on the detailed screen (the earlier desk); the new desk has its own spec.
+  await context.addInitScript(() => { try { window.sessionStorage.setItem("arasya.cf.detailed", "1"); } catch { /* no storage */ } });
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

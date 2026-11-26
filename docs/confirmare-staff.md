@@ -1,5 +1,8 @@
 # Confirmare in Staff (Staff 2.29.0, API 2.39.0, migration 037, Phase 3)
 
+> **Superseded for the daily operator and finance flow (2026-11-26):** see [operation-simplification-v1.md](operation-simplification-v1.md). The call record, line ticks, price box, three-step finance check, next-morning recheck and three-unanswered-calls proforma described below are retired; the detailed screen stays reachable for supervisors with `?detailed=1`.
+
+
 Phase 1 ([`confirmare-cohort.md`](confirmare-cohort.md)) closes production for new Trend Home and Outlet Perdele
 orders until Confirmare approves them. Phase 2 ([`confirmare-operations.md`](confirmare-operations.md)) added the
 server side: scopes, pool, distribution, decisions and audit. Phase 3 adds the work itself:

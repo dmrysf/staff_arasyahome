@@ -56,6 +56,7 @@ final readonly class ConfigLoader
         'ARASYA_B2B_ORDER_TYPES',
         'ARASYA_B2B_ACCOUNT_WRITES',
         'ARASYA_FINANCE_COLLECTIONS',
+        'ARASYA_CONFIRMARE_DECISIONS',
     ];
 
     /**

@@ -63,7 +63,12 @@ final class SourceOrderDetail
                 'phoneAvailable' => self::bool($contact['phoneAvailable'] ?? null),
                 'billing' => self::person($contact['billing'] ?? null),
                 'shipping' => self::person($contact['shipping'] ?? null),
+                // YD SOFT 2.35.0: the billing e-mail (null when the order has none or an older shop does not send it).
+                'email' => self::email($contact['email'] ?? null),
             ],
+            // YD SOFT 2.35.0 (owner correction 2026-11-26): the customer's other orders in THIS shop and the possible
+            // duplicates (information only). Absent from an older shop: empty.
+            'customer' => self::customer($data['customer'] ?? null),
             'lines' => self::lines($data['lines'] ?? null, $shopHost),
             'fees' => self::list($data['fees'] ?? null, self::MAX_SMALL, static fn (array $fee): array => [
                 'name' => self::text($fee['name'] ?? null, 200),
@@ -127,6 +132,7 @@ final class SourceOrderDetail
                 'tax' => self::money($line['tax'] ?? null),
                 'total' => self::money($line['total'] ?? null),
                 'calculator' => self::bool($line['calculator'] ?? null),
+                'stock' => self::stock($line['stock'] ?? null),
                 'image' => self::image($line['image'] ?? null, $shopHost),
             ];
         });
@@ -171,6 +177,73 @@ final class SourceOrderDetail
             'company' => self::text($person['company'] ?? null, 200, true),
             'phone' => self::phone($person['phone'] ?? null),
             'addressLines' => array_map(static fn (mixed $line): string => self::text($line, 300), $lines),
+            // API 2.82.0 (YD SOFT 2.35.0): the shop's own address fields, for the operator's in-place correction. Absent from
+            // an older shop (null). Read only here: Arasya never stores them.
+            'fields' => ($person['fields'] ?? null) === null ? null : self::addressFields($person['fields']),
+        ];
+    }
+
+    /** The WooCommerce address fields an operator may correct (API 2.82.0). */
+    public const ADDRESS_FIELDS = ['firstName', 'lastName', 'company', 'address1', 'address2', 'city', 'state', 'postcode', 'country'];
+
+    /** @return array<string, string> */
+    private static function addressFields(mixed $value): array
+    {
+        $fields = self::map($value);
+        $out = [];
+        foreach (self::ADDRESS_FIELDS as $key) {
+            $out[$key] = (string) (self::text($fields[$key] ?? '', 200, true) ?? '');
+        }
+        return $out;
+    }
+
+    /** API 2.82.0 (YD SOFT 2.35.0): the product's stock as the shop knows it now, or null from an older shop. @return array<string, mixed>|null */
+    private static function email(mixed $value): ?string
+    {
+        if (!is_string($value) || $value === '' || strlen($value) > 254 || filter_var($value, FILTER_VALIDATE_EMAIL) === false) {
+            return null;
+        }
+        return $value;
+    }
+
+    /** @return array{orders: list<array<string, mixed>>, possibleDuplicates: list<string>} */
+    private static function customer(mixed $value): array
+    {
+        if ($value === null) {
+            return ['orders' => [], 'possibleDuplicates' => []];
+        }
+        $customer = self::map($value);
+        $orders = self::list($customer['orders'] ?? [], 5, static function (array $order): array {
+            $status = self::map($order['status'] ?? null);
+            return [
+                'number' => self::pattern($order['number'] ?? null, '/^[A-Za-z0-9_-]{1,40}$/D'),
+                'createdAt' => self::optionalInstant($order['createdAt'] ?? null),
+                'status' => ['code' => self::text($status['code'] ?? null, 40), 'label' => self::text($status['label'] ?? null, 100)],
+                'total' => self::money($order['total'] ?? null),
+                'currency' => self::pattern($order['currency'] ?? null, '/^[A-Z]{3}$/D'),
+            ];
+        });
+        $numbers = array_column($orders, 'number');
+        $duplicates = [];
+        foreach (is_array($customer['possibleDuplicates'] ?? null) ? $customer['possibleDuplicates'] : [] as $number) {
+            if (is_string($number) && in_array($number, $numbers, true)) {
+                $duplicates[] = $number;
+            }
+        }
+        return ['orders' => $orders, 'possibleDuplicates' => $duplicates];
+    }
+
+    private static function stock(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        $stock = self::map($value);
+        $quantity = $stock['quantity'] ?? null;
+        return [
+            'status' => self::choice($stock['status'] ?? null, ['instock', 'outofstock', 'onbackorder', 'unknown']),
+            'managed' => self::bool($stock['managed'] ?? false),
+            'quantity' => is_int($quantity) && $quantity > -1000000 && $quantity < 1000000000 ? $quantity : null,
         ];
     }
 

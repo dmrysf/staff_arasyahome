@@ -145,6 +145,12 @@ export type OversightFilters = { employee?: string | null; source?: string | nul
 export type OversightEvent = { version: number; action: string; actor: Person | null; previousState: string | null; state: string; outcome: string | null; reasonCode: string | null; policy: string | null; at: string };
 export type OversightDetail = { request: OversightItem; events: OversightEvent[]; transfers: Transfer[] | null; currency: string | null };
 
+/** API 2.82.0: one order found by the finance employee's search (no customer data). */
+export type FinanceLookupItem = {
+  globalOrderId: string; orderNumber: string; sourceKey: string; cod: boolean; financialState: string | null;
+  proforma: { series: string | null; number: string } | null; task: { id: string; state: string; assignee: string | null; mine: boolean } | null;
+};
+
 export interface FinanceRequestsApi {
   orderFinanceRequest(globalOrderId: string, signal?: AbortSignal): Promise<OrderFinanceRequest>;
   requestFinance(globalOrderId: string, idempotencyKey: string): Promise<OrderFinanceRequest>;
@@ -161,6 +167,10 @@ export interface FinanceRequestsApi {
   correctPayment(requestId: string, input: CorrectionInput, idempotencyKey: string): Promise<FollowUpAnswer>;
   /** API 2.80.0: closed tasks beyond the inbox's latest ones, with search and a cursor. */
   financeHistory(query: { q?: string; before?: string | null; source?: string | null }, signal?: AbortSignal): Promise<FinanceHistory>;
+  /** API 2.82.0: any order of her shops by order or proforma number, with or without a task. */
+  financeLookup(query: string, signal?: AbortSignal): Promise<FinanceLookupItem[]>;
+  /** API 2.82.0: her own payment check of an order, whenever she wants (the open task, or a new one assigned to her). */
+  financeCheckOrder(globalOrderId: string, idempotencyKey: string): Promise<{ requestId: string; created: boolean }>;
   financeOversight(filters: OversightFilters, signal?: AbortSignal): Promise<Oversight>;
   financeOversightDetail(requestId: string, signal?: AbortSignal): Promise<OversightDetail>;
 }
@@ -460,6 +470,22 @@ type Http = { request<T>(path: string, init: RequestInit & { timeoutMs?: number 
 export const FINANCE_COMMAND_TIMEOUT_MS = 30_000;
 
 /** The HTTP side of the requests (no-store: money and task data are never kept in the browser's cache). */
+function mapLookup(value: unknown): FinanceLookupItem[] {
+  const raw = (value ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(raw.items)) return fail();
+  return raw.items.slice(0, 20).map((entry) => {
+    const item = (entry ?? {}) as Record<string, unknown>;
+    const proforma = item.proforma == null ? null : (item.proforma as Record<string, unknown>);
+    const task = item.task == null ? null : (item.task as Record<string, unknown>);
+    return {
+      globalOrderId: str(item.globalOrderId, 200), orderNumber: str(item.orderNumber, 64), sourceKey: str(item.sourceKey, 40), cod: bool(item.cod),
+      financialState: item.financialState == null ? null : str(item.financialState, 40),
+      proforma: proforma === null ? null : { series: proforma.series == null ? null : str(proforma.series, 20), number: str(proforma.number, 40) },
+      task: task === null ? null : { id: uuid(task.id), state: str(task.state, 40), assignee: task.assignee == null ? null : str(task.assignee, 200), mine: bool(task.mine) },
+    };
+  });
+}
+
 export function financeRequestsHttp(http: Http): FinanceRequestsApi {
   const order = (globalOrderId: string, tail = "") => `/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance-request${tail}`;
   const task = (requestId: string, tail = "") => `/confirmare/finance/requests/${encodeURIComponent(requestId)}${tail}`;
@@ -478,6 +504,8 @@ export function financeRequestsHttp(http: Http): FinanceRequestsApi {
     addPayment: (requestId, input, key) => http.request(task(requestId, "/add-payment"), post(key, input), mapFollowUp),
     correctPayment: (requestId, input, key) => http.request(task(requestId, "/correct-payment"), post(key, input), mapFollowUp),
     financeHistory: (query, signal) => http.request(`/confirmare/finance/requests/history${historyQuery(query)}`, { signal, cache: "no-store" }, mapHistory),
+    financeLookup: (query, signal) => http.request(`/confirmare/finance/lookup?${new URLSearchParams({ q: query }).toString()}`, { signal, cache: "no-store" }, mapLookup),
+    financeCheckOrder: (globalOrderId, key) => http.request("/confirmare/finance/check", post(key, { globalOrderId }), (value) => { const raw = value as Record<string, unknown>; return { requestId: uuid(raw?.requestId), created: bool(raw?.created) }; }),
     financeOversight: (filters, signal) => http.request(`/confirmare/finance/oversight${oversightQuery(filters)}`, { signal, cache: "no-store" }, mapOversight),
     financeOversightDetail: (requestId, signal) => http.request(`/confirmare/finance/oversight/${encodeURIComponent(requestId)}`, { signal, cache: "no-store" }, mapOversightDetail),
   };

@@ -70,9 +70,33 @@ export type ConfirmareItem = {
   contact: ConfirmareContactSummary | null;
   assignment: { employeeId: string; displayName: string; at: string; kind: string } | null;
   decision: { at: string; by: string | null; reasonCode: string | null } | null;
+  /** API 2.82.0: the operator's yellow mark (optional note and callback); null when the order is not waiting. */
+  waiting?: { at: string; note: string | null; callbackAt: string | null } | null;
+  /** API 2.82.0: the number of lines Arasya holds. */
+  lineCount?: number;
+  /** API 2.82.0: the desk's display copy of what the shop showed at its last read (never a decision). */
+  display?: { total: string | null; currency: string | null; warnings: string[]; readAt: string; current: boolean } | null;
+  /** API 2.82.0: the customer's name on the desk lists (Arasya's own order data). */
+  customerName?: string | null;
 };
 
 export type ConfirmareView = "mine" | "open" | "all" | "followup";
+/** API 2.82.0 (Operation Simplification V1): the operator desk's four lists. */
+export const DESK_VIEWS = ["new", "waiting", "confirmed", "refused"] as const;
+export type DeskView = (typeof DESK_VIEWS)[number];
+export type DeskCounts = Record<DeskView, number> & { doneToday: number };
+/** `decisions` (API 2.82.0): false until the operator decisions are switched on; the desk then opens the detailed screen. */
+export type DeskPool = { view: DeskView; items: ConfirmareItem[]; total: number; counts: DeskCounts; sources: string[] | null; limit: number; decisions: boolean };
+export const OPERATOR_DECISIONS = ["confirmed", "waiting", "refused"] as const;
+export type OperatorDecision = (typeof OPERATOR_DECISIONS)[number];
+/** `expectedVersion`, `reviewFingerprint` and `shownTotal` are exactly what the screen showed (never read again before sending). */
+export type DecisionInput = { expectedVersion: number; decision: OperatorDecision; reviewFingerprint?: string; shownTotal?: string; reasonCode?: RejectReason; note?: string; callbackAt?: string };
+export type DecisionAnswer = ConfirmareItem & { operatorDecision: OperatorDecision; undoUntil: string | null };
+/** A decision follow-up that needs a person (API 2.82.0): codes and names only, never customer data. */
+export type FollowUpItem = {
+  id: string; globalOrderId: string; orderNumber: string; sourceKey: string; kind: "confirmed" | "refused"; state: "failed" | "waiting";
+  step: string; attempts: number; reason: string | null; decidedBy: string; retriedBy: string | null; updatedAt: string;
+};
 /** One row of the production handoff list (API 2.42.0): the order's identity and next step only. */
 export type HandoffStep = "ready" | "print" | "awaiting_cutting";
 export type HandoffItem = { globalOrderId: string; orderNumber: string; sourceKey: string; dueDate: string | null; submittedAt: string | null; approvedAt: string | null; step: HandoffStep };
@@ -142,6 +166,15 @@ export interface ConfirmareApi extends ConfirmareEditApi, ConfirmareFinanceApi, 
   reassign(globalOrderId: string, input: { expectedVersion: number; employeeId: string }, idempotencyKey: string): Promise<ConfirmareItem>;
   reopen(globalOrderId: string, input: { expectedVersion: number }, idempotencyKey: string): Promise<ConfirmareItem>;
   approve(globalOrderId: string, input: ApproveInput, idempotencyKey: string): Promise<ConfirmareItem>;
+  /** API 2.82.0: the operator desk lists with their counts. */
+  desk(view: DeskView, source: string | null, signal?: AbortSignal): Promise<DeskPool>;
+  /** API 2.82.0: the operator's one decision (green, yellow, red). */
+  decide(globalOrderId: string, input: DecisionInput, idempotencyKey: string): Promise<DecisionAnswer>;
+  /** API 2.82.0: undo one's own green or red decision before the system acted on it. */
+  undoDecision(globalOrderId: string, input: { expectedVersion: number }, idempotencyKey: string): Promise<ConfirmareItem>;
+  /** API 2.82.0: what the system could not finish after a decision (supervisors only) and its safe retry. */
+  followUps?(signal?: AbortSignal): Promise<FollowUpItem[]>;
+  retryFollowUp?(followUpId: string, idempotencyKey: string): Promise<void>;
   reject(globalOrderId: string, input: { expectedVersion: number; reasonCode: RejectReason }, idempotencyKey: string): Promise<ConfirmareItem>;
   contact(globalOrderId: string, input: { expectedVersion: number; outcome: ContactOutcome; reviewFingerprint: string }, idempotencyKey: string): Promise<{ contact: ConfirmareContact; item: ConfirmareItem; /** API 2.46.0 */ proformaCycle: ContactCycle | null }>;
   availability(signal?: AbortSignal): Promise<ConfirmareAvailability>;

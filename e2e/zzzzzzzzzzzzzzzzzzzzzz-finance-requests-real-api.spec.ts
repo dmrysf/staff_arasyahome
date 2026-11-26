@@ -22,6 +22,8 @@ test.beforeAll(() => {
 
 async function signIn(browser: Browser, username: string) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
+  // Staff 2.57.0: these flows run on the detailed screen (the earlier desk); the new desk has its own spec.
+  await context.addInitScript(() => { try { window.sessionStorage.setItem("arasya.cf.detailed", "1"); } catch { /* no storage */ } });
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -96,15 +98,11 @@ test("the finance employee sees only the task: no customer, no order screen; rec
     await expect(page.getByTestId("fr-form-problem")).toBeVisible();
     await expect(page.getByTestId("fd-to-clarification")).toBeVisible();
     await page.getByTestId("fr-statement-reference").fill(F.reference);
+    // Staff 2.57.0 (Operation Simplification V1): two steps. The bank statement declaration is part of the one final button.
+    await expect(page.getByTestId("fd-step")).toHaveAttribute("data-step", "2");
+    await expect(page.getByTestId("fd-declaration")).toBeVisible();
+    await expect(page.getByTestId("fr-verify-next")).toContainText("Confirmă plata și continuă");
     await page.getByTestId("fr-verify-next").click();
-    await expect(page.getByTestId("fd-step")).toHaveAttribute("data-step", "3");
-    await expect(page.getByTestId("fr-confirm-text")).toContainText("BT E2E 0001");
-    await expect(page.getByTestId("fd-gap")).toContainText("0,00");
-    // The bank statement confirmation stays mandatory.
-    await page.getByTestId("fr-confirm-send").click();
-    await expect(page.getByTestId("fr-form-problem")).toBeVisible();
-    await page.getByTestId("fr-statement").check();
-    await page.getByTestId("fr-confirm-send").click();
     // Done: the next oldest task (or the list when none is left) opens by itself.
     await expect(page.getByTestId("fd-done")).toContainText(F.number);
     // The Confirmare order itself stays closed to a finance scope (the route falls back to Home).
@@ -227,12 +225,9 @@ test("not received, in a real browser: the operator's card follows finance by po
     expect(active).toBeGreaterThanOrEqual(4_500);
     expect(active).toBeLessThanOrEqual(6_500);
 
-    // "Plata nu a fost primită", with an explicit confirmation and a receipt.
+    // Staff 2.57.0: "NU" is recorded at once (no reason, no second screen); she may open the order again at any time.
+    await expect(fin.page.getByTestId("fd-question")).toContainText("oricând");
     await fin.page.getByTestId("fr-mode-not-received").click();
-    await fin.page.getByTestId("fd-not-received").click();
-    await expect(fin.page.getByTestId("fr-confirm")).toBeVisible();
-    await expect(fin.page.getByTestId("fr-confirm-text")).toContainText("nu se anulează");
-    await fin.page.getByTestId("fr-confirm-send").click();
     await expect(fin.page.getByTestId("fd-done")).toContainText(order.number);
     await expect(card).toHaveAttribute("data-phase", "notReceived", { timeout: 8_000 });
     await expect(op.page.getByTestId("fr-step-request")).toBeVisible();
@@ -260,7 +255,7 @@ test("clarification, in a real browser: finance asks, the operator answers, the 
     await fin.page.goto("/confirmare/finance/requests");
     await fin.page.getByTestId(`fr-open-${order.number}`).click();
     await expect(fin.page.getByTestId("fr-payment-reference")).toHaveText(order.reference);
-    await fin.page.getByTestId("fr-mode-not-received").click();
+    await fin.page.getByTestId("fr-mode-clarify-open").click();
     await fin.page.getByTestId("fr-mode-clarify").click();
     await fin.page.getByTestId("fr-reason-reference_missing").click();
     await expect(fin.page.getByTestId("fr-confirm")).toBeVisible();
@@ -339,10 +334,8 @@ test("an order of 23.10.2026 outside Confirmare (old date): the operator sends i
     await fin.page.getByTestId("fr-bank-reference").fill("BT E2E 0043");
     await fin.page.getByTestId("fr-value-date").fill(new Date().toISOString().slice(0, 10));
     await fin.page.getByTestId("fr-statement-reference").fill(order.reference);
-    await fin.page.getByTestId("fr-verify-next").click();
     await expect(fin.page.getByTestId("fr-task-manual")).toBeVisible();
-    await fin.page.getByTestId("fr-statement").check();
-    await fin.page.getByTestId("fr-confirm-send").click();
+    await fin.page.getByTestId("fr-verify-next").click();
     await expect(fin.page.getByTestId("fd-done")).toContainText(order.number);
     // The order of 21.10 (no task) never appears to finance; the API refuses it (covered by the API integration suite).
     await fin.page.goto("/confirmare/finance/requests");

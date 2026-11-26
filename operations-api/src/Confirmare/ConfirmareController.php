@@ -32,6 +32,10 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/reject         {expectedVersion, reasonCode}
  *   POST /confirmare/orders/{globalOrderId}/reopen         {expectedVersion}
  *   POST /confirmare/orders/{globalOrderId}/contact        {expectedVersion, outcome, reviewFingerprint}   (API 2.39.0)
+ *   POST /confirmare/orders/{globalOrderId}/decision       {expectedVersion, decision: confirmed|waiting|refused, reviewFingerprint?,
+ *                                                          reasonCode?, note?, callbackAt?} (API 2.82.0, the operator's one decision)
+ *   POST /confirmare/orders/{globalOrderId}/decision/undo  {expectedVersion}: the operator's own decision, before the system acted
+ *   GET  /confirmare/pool?view=new|waiting|confirmed|refused  the operator desk's lists with all four counts (API 2.82.0)
  *   GET  /confirmare/team                                  (supervisors, API 2.39.0)
  *   GET  /confirmare/availability
  *   PUT  /confirmare/availability                          {available, employeeId?}
@@ -89,6 +93,9 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/finance-request             {purpose: advance} + Idempotency-Key (operator)
  *   POST /confirmare/orders/{globalOrderId}/finance-request/{resubmit|cancel}  {expectedVersion, reasonCode?} + Idempotency-Key
  *   GET  /confirmare/finance/requests                      the finance employee's own tasks (inbox)
+ *   GET  /confirmare/finance/lookup?q=                     any order of her shops by order or proforma number (API 2.82.0)
+ *   POST /confirmare/finance/check                         {globalOrderId} + Idempotency-Key: her own payment check, with or
+ *                                                          without a task, whenever she wants (API 2.82.0)
  *   GET  /confirmare/finance/requests/{requestId}          one task, minimized (audited, no-store)
  *   POST /confirmare/finance/requests/{requestId}/{start|decide|second-check|reconcile}  + Idempotency-Key
  *   GET  /confirmare/finance/oversight[?employee=&source=&state=&from=&to=]  the supervised employees' requests (read only)
@@ -130,6 +137,8 @@ final readonly class ConfirmareController
         private CsrfGuard $csrf,
         private Config $config,
         private RequestContext $context,
+        /** API 2.82.0: the decision follow-ups a supervisor looks at and retries. */
+        private ?ConfirmareDecisionFollowUps $followUps = null,
     ) {
     }
 
@@ -252,6 +261,17 @@ final readonly class ConfirmareController
             }
             $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
             return $this->json($this->cycles->advanceForActor($actor, rawurldecode($m[1]), $request->requestId));
+        }
+        // API 2.82.0 (Operation Simplification V1): the finance employee finds any order of her shops and checks it herself.
+        if ($path === '/confirmare/finance/lookup' && $request->method === 'GET') {
+            return $this->json($this->requests->lookup($actor, $request->query('q')));
+        }
+        if ($path === '/confirmare/finance/check') {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->requests->checkOrder($actor, $request->json(1024), $request->header('idempotency-key') ?? '', $request->requestId));
         }
         if ($path === '/confirmare/finance/requests' && $request->method === 'GET') {
             return $this->json($this->requests->inbox($actor));
@@ -474,6 +494,32 @@ final readonly class ConfirmareController
                 throw new ApiException(400, 'INVALID_REQUEST', 'employeeId must be a string.');
             }
             return $this->json($this->service->setAvailability($actor, $employeeId, $input['available'] ?? null, $key, $request->requestId));
+        }
+        // API 2.82.0 (owner correction 2026-11-26): the decision follow-ups that need a person, for Confirmare supervisors
+        // (never the operator's list), and their safe retry.
+        if ($path === '/confirmare/followups' && $request->method === 'GET' && $this->followUps !== null) {
+            return $this->json(['items' => $this->followUps->attentionFor($actor)]);
+        }
+        if (preg_match('#^/confirmare/followups/([0-9a-f-]{36})/retry$#D', $path, $m) === 1 && $this->followUps !== null) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->followUps->retry($actor, $m[1]));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/(decision|decision/undo)$#D', $path, $m) === 1) {
+            // API 2.82.0 (Operation Simplification V1): the operator's one decision (green, yellow, red) and its undo.
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            $globalId = rawurldecode($m[1]);
+            if ($m[2] === 'decision/undo') {
+                $input = $this->body($request, ['expectedVersion']);
+                return $this->json($this->service->undoDecision($actor, $globalId, $input['expectedVersion'] ?? null, $key, $request->requestId));
+            }
+            $input = $this->body($request, ['expectedVersion', 'decision', 'reviewFingerprint', 'shownTotal', 'reasonCode', 'note', 'callbackAt'], 2048);
+            return $this->json($this->service->decide($actor, $globalId, $input['expectedVersion'] ?? null, array_diff_key($input, ['expectedVersion' => true]), $key, $request->requestId));
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/(claim|release|reassign|approve|reject|reopen|contact)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {

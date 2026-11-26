@@ -35,7 +35,9 @@ import { dashboardUrlFor, resolveWorkspaces, saveWorkspacePreference, type Works
 import { LoginIntroStage, introPlaysHere, preloadIntroMap } from "../features/auth/LoginIntro";
 import { I18nProvider, normalizeLocale, readDeviceLocale, saveDeviceLocale, t, type Locale } from "../i18n";
 import { localizeWorkflow } from "../domain/stageNames";
+import { DecisionDesk } from "../features/confirmare/DecisionDesk";
 import { OperatorDesk } from "../features/confirmare/OperatorDesk";
+import { detailedDesk } from "../domain/decisionDesk";
 import { ConfirmareTeamScreen } from "../features/confirmare/ConfirmareTeamScreen";
 import { ConfirmareFinanceScreen } from "../features/confirmare/ConfirmareFinanceScreen";
 import { FinanceCheckScreen, FinanceDeskScreen, FinanceDoneScreen } from "../features/confirmare/FinanceDesk";
@@ -182,7 +184,11 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
     if (stationOnly && window.location.pathname !== "/awb") window.history.replaceState({}, "", "/awb");
     return <AwbStationScreen key={session.employee.employeeUuid} service={services.awb} displayName={session.employee.displayName} canPrint={canPrintAwb(session.employee)} onLogout={logout} onBack={stationOnly ? undefined : () => navigate("/")} />;
   }
-  const desk = (service: ConfirmareApi, deskOrderId: string | null) => <OperatorDesk employee={session.employee} service={service} documents={services.documents} orderId={deskOrderId} navigate={navigate} workspaces={workspaces} onWorkspace={chooseWorkspace} />;
+  // Staff 2.57.0 (Operation Simplification V1): the operator desk is the four-list desk with the full-page order editor.
+  // The detailed screen (the earlier desk with every panel) stays reachable for supervisors and the transition (?detailed=1).
+  const desk = (service: ConfirmareApi, deskOrderId: string | null) => detailedDesk()
+    ? <OperatorDesk employee={session.employee} service={service} documents={services.documents} orderId={deskOrderId} navigate={navigate} workspaces={workspaces} onWorkspace={chooseWorkspace} />
+    : <DecisionDesk employee={session.employee} service={service} documents={services.documents} orderId={deskOrderId} navigate={navigate} workspaces={workspaces} onWorkspace={chooseWorkspace} />;
   let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
   if (guardedRoute === "/" && deskHome && services.confirmare) screen = desk(services.confirmare, null);
   else if (guardedRoute === "/" && financeHome && services.confirmare) screen = <FinanceDeskScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;

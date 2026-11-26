@@ -83,6 +83,9 @@ final class OperationsTestSupport
             // Most integration suites exercise typed B2B orders (API 2.67.0), so the test kernel enables them. Production
             // defaults to off; the switch itself is covered by mysql-finance-collections-integration.php (section O).
             b2bOrderTypes: 'enabled',
+            // API 2.82.0: the test kernel runs with the operator's decisions on; mysql-confirmare-decision-integration.php
+            // covers the switch off (the production default).
+            confirmareDecisions: 'enabled',
         );
     }
 

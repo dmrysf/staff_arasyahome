@@ -1,5 +1,8 @@
 # Contabilitate desk (Staff 2.56.0, API 2.81.0, YD SOFT 2.32.0)
 
+> **Superseded for the daily operator and finance flow (2026-11-26):** see [operation-simplification-v1.md](operation-simplification-v1.md). The call record, line ticks, price box, three-step finance check, next-morning recheck and three-unanswered-calls proforma described below are retired; the detailed screen stays reachable for supervisors with `?detailed=1`.
+
+
 Owner decisions 2026-11-25:
 - The finance employee's payment checks follow one path, **Kontrol et → Karar ver → Onayla → Sıradaki sipariş**.
 - **The operator manages the customer, finance manages the money, the system does the arithmetic and the routing.**

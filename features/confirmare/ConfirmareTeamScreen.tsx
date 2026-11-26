@@ -10,6 +10,7 @@ import { Notice, StatusPill, type Tone } from "../../components/ui/StatusPill";
 import { AutoRefreshBar, DashboardSection, EmptyState, Metric, MetricGrid, QueueSkeleton } from "../workspaces/DashboardParts";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { ConfirmareRow, confirmareOrderPath, when } from "./ConfirmareParts";
+import { FollowUpsSection } from "./FollowUpsSection";
 
 type TeamData = { team: ConfirmareTeam; alerts: ConfirmareAlert[]; items: ConfirmareItem[] };
 
@@ -89,6 +90,8 @@ export function ConfirmareTeamScreen({ employee, service, navigate }: { employee
               })}</ul>)}
             {data && <p className="dashboard-footnote">{t("cf.team.leaveNote", { target: data.team.targetOpenPerOperator })}</p>}
           </DashboardSection>
+
+          <FollowUpsSection service={service} navigate={navigate} />
 
           <DashboardSection labelledBy="cf-team-alerts" eyebrow={t("cf.team.alertsEyebrow")} title={t("cf.team.alerts")}>
             {data && (data.alerts.length === 0

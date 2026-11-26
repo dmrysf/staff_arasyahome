@@ -118,6 +118,29 @@ if ($change !== null) {
     exit(0);
 }
 
+// Staff 2.57.0 (Operation Simplification V1): `--desk` adds three fresh cash-on-delivery orders (91201-91203) for the desk
+// spec, after the main seed (the people and the activation exist). Unassigned: opening an order on the desk takes it.
+if (in_array('--desk', $argv, true)) {
+    foreach (['91201', '91202', '91203'] as $index => $deskNumber) {
+        $ingest('trendhome', $order($deskNumber, $now->modify('-' . (40 - $index) . ' minutes'), ['payment' => 'cod']));
+    }
+    $writeShop();
+    // The finance requests fixture of an earlier spec takes Trend Home away from the other TEST finance people (test
+    // database only); the desk spec's finance employee gets her record scope back, through root, like the main seed.
+    $finrec = $pdo->prepare('SELECT employee_uuid FROM employees WHERE username = ?');
+    $finrec->execute(['cf.finrec.e2e']);
+    $finrecId = $finrec->fetchColumn();
+    if (is_string($finrecId)) {
+        $deskRoot = T::login($kernel, RootBootstrapService::ROOT_USERNAME, 'staff root fixture permanent 2026');
+        $granted = T::call($kernel, 'PUT', "/management/employees/{$finrecId}/finance-scopes", ['view' => [], 'record' => ['trendhome'], 'approve' => []], ['origin' => $origin, 'x-csrf-token' => $deskRoot['csrf'], 'idempotency-key' => 'cf-e2e-desk-' . bin2hex(random_bytes(8))], $deskRoot['cookie']);
+        if ($granted['status'] !== 200) {
+            throw new RuntimeException('E2E desk finance scope failed: ' . json_encode($granted['body']));
+        }
+    }
+    echo json_encode(['orders' => ['first' => 'trendhome:91201', 'second' => 'trendhome:91202', 'third' => 'trendhome:91203']]), "\n";
+    exit(0);
+}
+
 $cutover = \Arasya\Operations\Production\WorkflowCohort::cutover();
 if ($now < $cutover->modify('+10 minutes')) {
     echo json_encode(['skip' => 'The clock is before the Confirmare cutover.']), "\n";

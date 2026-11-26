@@ -270,6 +270,94 @@ final readonly class CancellationSyncService
         });
     }
 
+    /**
+     * API 2.82.0 (Operation Simplification V1, owner decision 2026-11-26): the customer refused the order (the operator's red
+     * decision, after its undo period; ConfirmareDecisionFollowUps). Like the expired proforma, a server rule triggers it and
+     * the deciding operator is the recorded actor. It only ever stops an order nobody paid for and nobody worked on:
+     * - money received or being verified (the shop's financial state, Arasya's open finance action), an open finance hold,
+     *   an applied final invoice, or production past its first stage: nothing is stopped, the order goes to a person
+     *   (`money_received`, `finance_open`, `finance_hold`, `invoice_exists`, `production_started`);
+     * - the order's finance tasks without a money step are withdrawn first (FinanceVerificationRequests::withdrawForRefusal);
+     *   a task in the middle of a check makes it wait (`finance_open`);
+     * - then the local production stop and the cancellation request to the shop, created once (a repeated call answers with
+     *   the existing operation). Nothing here refunds, deletes an invoice or removes a production record.
+     *
+     * @return array{state: string, operation?: string, mechanism?: string}
+     */
+    public function requestForCustomerRefusal(string $orderUuid, string $actorUuid, string $requestId, string $key): array
+    {
+        return $this->transactionWithRetry(function () use ($orderUuid, $actorUuid, $requestId, $key): array {
+            $order = $this->lockOrder($orderUuid);
+            if ($this->financeOpen($order)) {
+                return ['state' => 'finance_open'];
+            }
+            $facts = $this->pdo->prepare('SELECT o.source_financial_state, o.source_financial_basis, o.production_stage_id, o.cancellation_state,
+                    (SELECT COALESCE(MAX(a.verified_amount), 0) FROM finance_task_amounts a INNER JOIN finance_verification_requests r ON r.request_uuid = a.request_uuid WHERE r.order_uuid = o.order_uuid) AS verified,
+                    (SELECT COALESCE(MAX(a.received_amount), 0) FROM finance_task_amounts a INNER JOIN finance_verification_requests r ON r.request_uuid = a.request_uuid WHERE r.order_uuid = o.order_uuid) AS received
+                FROM operational_orders o WHERE o.order_uuid = ?');
+            $facts->execute([$orderUuid]);
+            $fact = $facts->fetch(\PDO::FETCH_ASSOC) ?: [];
+            if (($fact['source_financial_state'] ?? null) === 'cleared' && ($fact['source_financial_basis'] ?? null) !== 'zero_total' || (float) ($fact['verified'] ?? 0) > 0 || (float) ($fact['received'] ?? 0) > 0) {
+                return ['state' => 'money_received'];
+            }
+            if (\Arasya\Operations\Confirmare\ConfirmareFinanceHolds::blocksProduction($this->pdo, $orderUuid)) {
+                return ['state' => 'finance_hold'];
+            }
+            $invoice = $this->pdo->prepare('SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = ? AND ' . \Arasya\Operations\Confirmare\ConfirmareInvoice::ISSUED_SQL . ' LIMIT 1');
+            $invoice->execute([$orderUuid]);
+            if ($invoice->fetchColumn() !== false) {
+                return ['state' => 'invoice_exists'];
+            }
+            if ((string) ($fact['production_stage_id'] ?? '') !== \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID) {
+                return ['state' => 'production_started'];
+            }
+            $now = $this->clock->now()->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
+            if (!\Arasya\Operations\Confirmare\FinanceVerificationRequests::withdrawForRefusal($this->pdo, $orderUuid, $actorUuid, $now, $requestId)) {
+                return ['state' => 'finance_open'];
+            }
+            (new CancellationControl($this->pdo, $this->clock))->stopLocally($orderUuid, $actorUuid, 'Clientul a refuzat comanda (Confirmare, decizia operatorului).', true, $requestId, $key);
+            $control = $this->control($orderUuid);
+            if ($control === null || $control['hold_status'] !== CancellationControl::HELD) {
+                return ['state' => 'not_held'];
+            }
+            if ($control['source_status'] === 'cancelled') {
+                return ['state' => 'source_cancelled'];
+            }
+            $operations = new SyncOperations($this->pdo, $this->clock);
+            $generation = (int) $control['hold_generation'];
+            $existing = $operations->forGeneration($orderUuid, $generation);
+            if ($existing !== null) {
+                return ['state' => 'requested', 'operation' => (string) $existing['operation_uuid'], 'mechanism' => (string) $existing['mechanism']];
+            }
+            if ($operations->openFor($orderUuid) !== null) {
+                return ['state' => 'sync_open'];
+            }
+            $source = (string) $order['source_key'];
+            $provider = $this->providers->for($source);
+            $external = $this->externalRef($order);
+            $mechanism = $provider->mechanism();
+            if ($mechanism !== 'manual' && ($external === null || !$this->providers->active($source))) {
+                $mechanism = 'manual';
+            }
+            [$state, $error] = match ($mechanism) {
+                'source_pull' => [SyncState::AWAITING_PICKUP, null],
+                'api' => [SyncState::MANUAL_REVIEW, 'REASON_REQUIRED'],
+                default => [SyncState::MANUAL_REVIEW, $provider instanceof ManualProvider ? $provider->reason() : ($external === null ? 'EXTERNAL_ORDER_UNKNOWN' : 'PROVIDER_UNSUPPORTED')],
+            };
+            if ($mechanism === 'api') {
+                $mechanism = 'manual';
+            }
+            (new CancellationControl($this->pdo, $this->clock))->requestSource($orderUuid, $actorUuid, $requestId, $key, $mechanism);
+            $operation = $operations->create($orderUuid, $generation, $source, $external ?? (string) $order['global_order_id'], $mechanism, $state, null,
+                'Clientul a refuzat comanda (Confirmare).', $actorUuid, $error, $requestId);
+            $actor = (new PdoEmployeeRepository($this->pdo))->findByUuid($actorUuid);
+            if ($actor !== null) {
+                $this->audit($actor, 'production.cancellation.sync_requested', $order, ['operation' => $operation['operation_uuid'], 'mechanism' => $mechanism, 'state' => $state, 'trigger' => 'customer_refused'], $requestId);
+            }
+            return ['state' => 'requested', 'operation' => (string) $operation['operation_uuid'], 'mechanism' => $mechanism];
+        });
+    }
+
     /** @param array<string, mixed> $input @return array<string, mixed> */
     public function retry(EmployeeIdentity $actor, string $operationId, array $input, string $key, string $requestId): array
     {
