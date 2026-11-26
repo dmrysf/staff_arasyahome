@@ -39,7 +39,9 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `php -S 127.0.0.1:${apiPort} operations-api/public/index.php`,
+      // No JIT, as in production (PHP 8.2.36: pcre.jit Off, opcache.jit_buffer_size 0). setup-php turns the OPcache
+      // JIT on (opcache.jit=1235, 256M); with it a forked server worker crashed with SIGSEGV in JIT code during shop reads.
+      command: `php -d pcre.jit=0 -d opcache.jit=disable -d opcache.jit_buffer_size=0 -S 127.0.0.1:${apiPort} operations-api/public/index.php`,
       url: `http://127.0.0.1:${apiPort}/health`,
       reuseExistingServer: false,
       timeout: 30_000,

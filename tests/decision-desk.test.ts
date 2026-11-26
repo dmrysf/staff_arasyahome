@@ -154,7 +154,11 @@ test("the operator desk keeps the safety rules out of the operator's way but in 
   assert.ok(!decide.includes("service.detail("), "the decision never reads the order again before sending (that would approve an order nobody showed)");
   assert.ok(decide.includes("sameAmount(heard, savedTotal)"), "after saving, green goes on only when the shop saved the total of the last preview");
   assert.ok(!workbench.includes("RefusePanel") && !workbench.includes("dd-refuse"), "red is one click: no reason form");
-  assert.ok(workbench.includes("onClick={() => { void decide(\"waiting\"); }}") && workbench.includes("onClick={() => { void decide(\"refused\"); }}"), "yellow and red decide with one click");
+  // Staff 2.58.0: the three buttons live in OrderDecisionBar; each click calls decide() directly (no form, no modal).
+  const bar = readFileSync(new URL("../features/confirmare/workspace/OrderFinancialHeader.tsx", import.meta.url), "utf8");
+  const barBody = bar.slice(bar.indexOf("export function OrderDecisionBar"));
+  assert.ok(workbench.includes("onDecide={(decision) => { void decide(decision); }}") && barBody.includes("onClick={() => onDecide(decision)}") && !barBody.includes("<form") && !barBody.includes("dialog"),
+    "green, yellow and red decide with one click");
   assert.ok(workbench.includes("CONFIRMARE_REVIEW_STALE"), "a changed total shows the new total and asks again");
   assert.ok(!workbench.includes("customerCall"), "no call record field is sent");
   assert.ok(!workbench.includes("priceVerified"), "no separate price box");
