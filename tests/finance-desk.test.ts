@@ -315,6 +315,7 @@ test("Staff 2.62.0 (Finance Smart Search V1): one search box, the customer next 
   const columns = source.slice(source.indexOf("const COLUMNS ="), source.indexOf("function DeskTable("));
   assert.doesNotMatch(columns, /"state"/, "the status column is gone from the daily table");
   assert.match(columns, /"order", "shop", "ordered", "age", "proforma", "advance", "action"/);
+  assert.match(source, /data-testid=\{`fr-card-manual-\$\{item\.orderNumber\}`\}/, "the manual ledger tag keeps its own element (real-API e2e)");
   const desk = source.slice(source.indexOf("export function FinanceDeskScreen"), source.indexOf("// ---- The three-step check"));
   assert.equal((desk.match(/data-testid="fd-search"/g) ?? []).length, 1, "one search box");
   assert.doesNotMatch(desk, /fd-lookup-input|financeLookup\(/, "the separate order lookup box is merged into the search");

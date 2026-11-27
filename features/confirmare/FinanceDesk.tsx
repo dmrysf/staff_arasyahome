@@ -347,7 +347,8 @@ function DeskRow({ item, entry, diff, now, navigate }: { item: InboxItem; entry:
       <span role="cell" className="fd-c-order">
         <span className="fd-order-line"><strong className="mono">#{item.orderNumber}</strong>{client && <><span className="fd-dash" aria-hidden="true">—</span><span className="fd-client" title={client} data-testid={`fd-client-${item.orderNumber}`}>{client}</span></>}</span>
         {entry && <Reasons entry={entry} testId={`fd-why-${item.orderNumber}`} />}
-        {!entry && (note || item.ledger === "manual") && <small className="fd-why" data-testid={`fr-card-state-${item.orderNumber}`}>{[note, item.ledger === "manual" ? t("fr.ledger.manual") : null].filter(Boolean).join(" · ")}</small>}
+        {!entry && note && <small className="fd-why" data-testid={`fr-card-state-${item.orderNumber}`}>{note}</small>}
+        {item.ledger === "manual" && <small className="fd-why fd-tag" data-testid={`fr-card-manual-${item.orderNumber}`}>{t("fr.ledger.manual")}</small>}
       </span>
       <span role="cell" className="fd-c-shop">{sourceLabel(item.source)}</span>
       <span role="cell" className="fd-c-ordered">{item.orderedAt ? formatDate(item.orderedAt, { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Bucharest" }) : "—"}</span>
