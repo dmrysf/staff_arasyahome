@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { addressChanges, addressWarnings, advanceFor, draftKey, fromBani, loadDraft, moneyHeader, nextAfter, replacementFields, replacementOperations, sameAmount, saveDraft, toBani, waitingLabel } from "../domain/decisionDesk";
+import { addressChanges, addressWarnings, advanceFor, draftKey, fromBani, greenTotalReady, loadDraft, moneyHeader, nextAfter, replacementFields, replacementOperations, sameAmount, saveDraft, toBani, waitingLabel } from "../domain/decisionDesk";
 import { mapDecisionAnswer, mapDeskPool, mapEditResult, mapShopRead } from "../services/production/httpServices";
 import type { ConfirmareItem } from "../domain/confirmare";
 import type { EditProduct } from "../domain/confirmareEdit";
@@ -174,4 +174,35 @@ test("the shop's saved total is compared with the previewed one in bani, never a
   assert.equal(sameAmount("0.1", "0.10"), true);
   assert.equal(sameAmount(null, "1.00"), false, "an unknown total is never the same total");
   assert.equal(sameAmount("1,00", "1.00"), false, "a value that is not the shop's decimal is never the same total");
+});
+
+test("Staff 2.61.1: green waits for the shop's current total and never sends without it", () => {
+  const read = { available: true };
+  const failed = { available: false };
+  // The order is on screen before the shop's read: nothing to send yet.
+  assert.equal(greenTotalReady(true, null, null, false), false, "shop total not loaded yet");
+  assert.equal(greenTotalReady(true, null, null, false), false, "shop read still running (slow shop)");
+  assert.equal(greenTotalReady(true, failed, null, false), false, "a failed shop read gives no total: no invented or default total");
+  assert.equal(greenTotalReady(true, read, null, false), false, "a shop order without a readable total is never confirmed");
+  assert.equal(greenTotalReady(true, read, "719.00", true), false, "a change is being priced: the old total is never sent");
+  assert.equal(greenTotalReady(true, read, "719.00", false), true, "the shop's current total is on screen: green is enabled by itself");
+  assert.equal(greenTotalReady(false, null, null, false), true, "without source access the server compares no shop total (unchanged)");
+  assert.equal(greenTotalReady(false, null, null, true), false, "a change being priced still blocks green (unchanged)");
+});
+
+test("Staff 2.61.1: the green button and decide() share the same readiness, and a fast click sends nothing", () => {
+  const workbench = readFileSync(new URL("../features/confirmare/OrderWorkbench.tsx", import.meta.url), "utf8");
+  assert.ok(workbench.includes("const totalReady = detail !== null && greenTotalReady(detail.sourceAccess.read, shop, money?.total ?? null, computing);"),
+    "readiness is computed from the shop read on screen and the total the screen shows");
+  assert.ok(workbench.includes("const greenBlocked = !totalReady || problems.includes(\"last_line\");"), "the green button stays disabled until the total is ready");
+  const decide = workbench.slice(workbench.indexOf("async function decide("), workbench.indexOf("async function undo("));
+  assert.ok(decide.includes("if (decision === \"confirmed\" && !totalReady) return;"), "a click that reaches decide() before the total is ready sends nothing");
+  assert.ok(decide.indexOf("!totalReady") < decide.indexOf("service.decide("), "the guard runs before any request");
+  assert.ok(decide.includes("let shownTotal: string | null = money?.total ?? null;"), "the total sent is the one the screen shows, never a default");
+  assert.ok(!/setTimeout\([^)]*decide/.test(workbench), "no fixed wait before a decision");
+  // The double-click guard and the server's rule stay: every decision button is disabled while one is sent.
+  const bar = readFileSync(new URL("../features/confirmare/workspace/OrderFinancialHeader.tsx", import.meta.url), "utf8");
+  assert.ok(bar.includes("const disabled = busy !== null || (decision === \"confirmed\" && greenBlocked);"), "one decision at a time; green also waits for the total");
+  const service = readFileSync(new URL("../operations-api/src/Confirmare/ConfirmareService.php", import.meta.url), "utf8");
+  assert.ok(service.includes("'CONFIRMARE_TOTAL_REQUIRED', 'shownTotal (the total the customer confirmed) is required.'"), "the server still refuses a green without the shown total");
 });

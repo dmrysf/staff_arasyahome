@@ -84,6 +84,18 @@ export function moneyHeader(detail: ShopOrderDetail, previewTotal: string | null
   };
 }
 
+/**
+ * Whether green may be pressed on the total the screen shows (Staff 2.61.1). Where Staff reads the shop's order the
+ * server requires that total (CONFIRMARE_TOTAL_REQUIRED), so green waits until the shop's current total is on screen:
+ * never while the shop is still being read, never after a failed read (no total is invented or defaulted) and never
+ * while a change is being priced. Without source access the server has no shop total to compare and green stays as it was.
+ */
+export function greenTotalReady(sourceRead: boolean, shop: { available: boolean } | null, shownTotal: string | null, computing: boolean): boolean {
+  if (computing) return false;
+  if (!sourceRead) return true;
+  return shop !== null && shop.available && shownTotal !== null;
+}
+
 // ---- Desk list -----------------------------------------------------------------------------------------------------
 
 /** How long an order has waited, in whole minutes (from its submission, else from its arrival in Confirmare). */

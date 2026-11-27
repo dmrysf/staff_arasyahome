@@ -4,7 +4,7 @@ import type { Employee } from "../../domain/models";
 import { canSuperviseConfirmare, confirmareScopesOf, type ConfirmareApi, type ConfirmareDetail, type DeskView, type OperatorDecision } from "../../domain/confirmare";
 import { blockerLabel, draftProblems, editOperations, editReasonLabel, emptyEditDraft, type EditCatalog, type EditDraft, type EditOperation, type EditPreview } from "../../domain/confirmareEdit";
 import { formatShopMoney, type ShopRead } from "../../domain/confirmareShop";
-import { browserStorage, draftKey, loadDraft, moneyHeader, nextAfter, replacementFields, saveDraft, sameAmount } from "../../domain/decisionDesk";
+import { browserStorage, draftKey, greenTotalReady, loadDraft, moneyHeader, nextAfter, replacementFields, saveDraft, sameAmount } from "../../domain/decisionDesk";
 import { readWideNav } from "../../domain/operatorWorkspace";
 import type { DocumentApi } from "../../domain/documents";
 import { createIdempotencyKey } from "../../services/idempotency";
@@ -165,6 +165,9 @@ export function OrderWorkbench({ orderId, employee, service, navigate, backPath,
   const computing = pendingEdit && (previewing || preview === null);
   const mine = detail?.assignment?.employeeId === employee.employeeUuid;
   const canDecide = detail !== null && detail.status === "pending" && (mine || supervisor);
+  // Green waits for the shop's current total (Staff 2.61.1): the order arrives before the shop's read, and a green sent
+  // in between had no total to send (CONFIRMARE_TOTAL_REQUIRED).
+  const totalReady = detail !== null && greenTotalReady(detail.sourceAccess.read, shop, money?.total ?? null, computing);
 
   // ---- Saving an edit -------------------------------------------------------------------------------------------------
   async function waitSettled(): Promise<ConfirmareDetail | null> {
@@ -225,6 +228,7 @@ export function OrderWorkbench({ orderId, employee, service, navigate, backPath,
    */
   async function decide(decision: OperatorDecision, extra: { note?: string; callbackAt?: string } = {}) {
     if (!detail) return;
+    if (decision === "confirmed" && !totalReady) return;
     let shown: ConfirmareDetail = detail;
     let shownTotal: string | null = money?.total ?? null;
     let currency = shopDetail?.order.currency ?? "RON";
@@ -312,7 +316,7 @@ export function OrderWorkbench({ orderId, employee, service, navigate, backPath,
 
   const statusLabel = t(`dd.status.${detail.status}` as MessageKey);
   const otherHolder = detail.assignment && !mine ? detail.assignment.displayName : null;
-  const greenBlocked = computing || problems.includes("last_line");
+  const greenBlocked = !totalReady || problems.includes("last_line");
   const editable = canDecide && Boolean(catalog?.editable);
   const pricesIncludeTax = shopDetail?.order.pricesIncludeTax ?? true;
   const currency = shopDetail?.order.currency ?? "RON";
