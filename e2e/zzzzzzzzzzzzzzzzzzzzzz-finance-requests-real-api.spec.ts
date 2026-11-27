@@ -36,9 +36,12 @@ async function signIn(browser: Browser, username: string) {
 }
 
 const orderPath = (order = F.order) => `/confirmare/orders/${encodeURIComponent(order)}`;
-const noCustomer = async (page: Page) => {
+// Staff 2.62.0 (Finance Smart Search V1, owner 2026-11-27): the finance employee's own list and payment check show the
+// customer's name (to find the order a transfer belongs to); never the telephone, the address or the products.
+const noCustomer = async (page: Page, nameShown = false) => {
   const text = await page.locator("main, body").first().innerText();
-  expect(text).not.toContain(F.customer);
+  if (nameShown) expect(text).toContain(F.customer);
+  else expect(text).not.toContain(F.customer);
   expect(text).not.toContain(F.phone);
   expect(text).not.toContain("Draperie Velvet");
 };
@@ -59,21 +62,21 @@ test("the operator sends the advance to finance from step 4; the card says who h
   } finally { await context.close(); }
 });
 
-test("the finance employee sees only the task: no customer, no order screen; records the transfer with an explicit confirmation", async ({ browser }) => {
+test("the finance employee sees only the task and the customer's name: no telephone, no products, no order screen; records the transfer with an explicit confirmation", async ({ browser }) => {
   const { context, page, errors } = await signIn(browser, F.people.rec.username);
   try {
     // Staff 2.52.5: the finance-only employee's home is the finance task list, with no production order list.
     await expect(page.getByTestId("fr-inbox")).toBeVisible();
     await expect(page.locator(".nav-orders")).toHaveCount(0);
     await expect(page.getByTestId(`fr-card-${F.number}`)).toBeVisible();
-    await noCustomer(page);
+    await noCustomer(page, true);
     // Staff 2.53.0 Contabilitate desk: four counters and a compact table, oldest first.
     await expect(page.getByTestId("fd-kpis")).toBeVisible();
     await expect(page.getByTestId("fd-kpi-todo")).not.toHaveText("–");
     await page.getByTestId(`fr-open-${F.number}`).click();
     await expect(page.getByTestId("fr-task")).toBeVisible();
     await expect(page.getByTestId("fr-payment-reference")).toHaveText(F.reference);
-    await noCustomer(page);
+    await noCustomer(page, true);
     // "Kontrole başla" happens by itself (audited, no payment decision); step 1 asks one question.
     await expect(page.getByTestId("fr-task")).toHaveAttribute("data-state", "checking");
     await expect(page.getByTestId("fd-step")).toHaveAttribute("data-step", "1");
