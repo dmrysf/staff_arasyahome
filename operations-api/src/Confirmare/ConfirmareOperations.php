@@ -230,8 +230,12 @@ final class ConfirmareOperations
         // The invoice manager of a shop sees all its waiting orders; any other employee only the orders routed to them.
         $managed = array_values(array_filter($sources, fn (string $s): bool => $this->invoices->allows($actor, InvoiceScopePolicy::MANAGE, $s)));
         $mine = $managed === [] ? 'a.employee_uuid = ?' : '(o.source_key IN (' . implode(', ', array_fill(0, count($managed), '?')) . ') OR a.employee_uuid = ?)';
+        // API 2.84.2: an attempt the shop never received (rejected `not_received`, settled by the lost-answer check) did
+        // nothing at the shop or at FAN Courier and has no reason to correct, so it is not the order's last attempt. It used to
+        // put the order under "Needs correction" (Trend Home 65714, 2026-11-25) although its AWB was ready to be made.
         $statement = $this->pdo->prepare("SELECT o.global_order_id, o.order_number, o.source_key, o.production_stage_id,
-                (SELECT op.state FROM order_source_operations op WHERE op.order_uuid = o.order_uuid AND op.kind = 'awb_create' ORDER BY op.requested_at DESC LIMIT 1) AS last_awb
+                (SELECT op.state FROM order_source_operations op WHERE op.order_uuid = o.order_uuid AND op.kind = 'awb_create'
+                    AND NOT (op.state = 'rejected' AND op.outcome <=> 'not_received') ORDER BY op.requested_at DESC LIMIT 1) AS last_awb
             FROM operational_orders o
             INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid AND c.status = 'approved'
             LEFT JOIN order_shop_assignments a ON a.active_order_uuid = o.order_uuid

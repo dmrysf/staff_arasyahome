@@ -104,6 +104,16 @@ Owner brief "STORE WORKSPACE V1.1 — FINAL AUTOMATION APPROVAL".
 - Audit stays separate: `order_confirmations.decided_by_employee_uuid` (the real approver), the request's
   `trigger_employee_uuid` (the employee whose print asked) and the system's `order_invoice_actions` row.
 
+### API 2.84.2 — "Needs correction" ignores attempts the shop never received
+
+- "Needs correction" (the AWB `problem` filter and the home counter `awb.needsFix`) lists orders whose last AWB attempt was
+  rejected. An attempt whose answer was lost and that the lost-answer check settled as rejected `not_received` (the shop
+  never got it: nothing happened at the shop or at FAN Courier) also counted, so an order ready for its AWB showed as needing
+  a correction.
+- `ConfirmareOperations::awbQueue` now skips `not_received` attempts when it picks the last attempt. Real refusals
+  (`awb_refused`, `awb_exists`, `not_created`, …) are unchanged, and so are AWB creation, duplicate protection and
+  `awbDoneSql`. No migration; no data is changed. Rollback to 2.84.1 is safe.
+
 ## API (read routes; actions keep their existing routes)
 
 - `GET /confirmare/store/summary`: counters. Documents waiting (handoff list ready/print), documents needing a revision,
