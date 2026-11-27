@@ -36,9 +36,14 @@ async function signIn(browser: Browser, username: string) {
 }
 
 const orderPath = (order = F.order) => `/confirmare/orders/${encodeURIComponent(order)}`;
-const noCustomer = async (page: Page) => {
+// Staff 2.62.0 (Finance Smart Search V1, owner 2026-11-27): the finance employee's own list and payment check show the
+// customer's name (to find the order a transfer belongs to); never the telephone, the address or the products.
+// "shown": the name must be on the screen; "allowed": a finance employee's own view, the name may be there; by default
+// (operator, oversight, money panels) it never is.
+const noCustomer = async (page: Page, name: "shown" | "allowed" | "never" = "never") => {
   const text = await page.locator("main, body").first().innerText();
-  expect(text).not.toContain(F.customer);
+  if (name === "shown") expect(text).toContain(F.customer);
+  if (name === "never") expect(text).not.toContain(F.customer);
   expect(text).not.toContain(F.phone);
   expect(text).not.toContain("Draperie Velvet");
 };
@@ -59,21 +64,21 @@ test("the operator sends the advance to finance from step 4; the card says who h
   } finally { await context.close(); }
 });
 
-test("the finance employee sees only the task: no customer, no order screen; records the transfer with an explicit confirmation", async ({ browser }) => {
+test("the finance employee sees only the task and the customer's name: no telephone, no products, no order screen; records the transfer with an explicit confirmation", async ({ browser }) => {
   const { context, page, errors } = await signIn(browser, F.people.rec.username);
   try {
     // Staff 2.52.5: the finance-only employee's home is the finance task list, with no production order list.
     await expect(page.getByTestId("fr-inbox")).toBeVisible();
     await expect(page.locator(".nav-orders")).toHaveCount(0);
     await expect(page.getByTestId(`fr-card-${F.number}`)).toBeVisible();
-    await noCustomer(page);
+    await noCustomer(page, "shown");
     // Staff 2.53.0 Contabilitate desk: four counters and a compact table, oldest first.
     await expect(page.getByTestId("fd-kpis")).toBeVisible();
     await expect(page.getByTestId("fd-kpi-todo")).not.toHaveText("–");
     await page.getByTestId(`fr-open-${F.number}`).click();
     await expect(page.getByTestId("fr-task")).toBeVisible();
     await expect(page.getByTestId("fr-payment-reference")).toHaveText(F.reference);
-    await noCustomer(page);
+    await noCustomer(page, "shown");
     // "Kontrole başla" happens by itself (audited, no payment decision); step 1 asks one question.
     await expect(page.getByTestId("fr-task")).toHaveAttribute("data-state", "checking");
     await expect(page.getByTestId("fd-step")).toHaveAttribute("data-step", "1");
@@ -126,7 +131,7 @@ test("the recorder cannot verify their own transfer; another employee does the s
     await expect(page.getByTestId(`fr-card-${F.number}`)).toBeVisible();
     await page.getByTestId(`fr-open-${F.number}`).click();
     await expect(page.getByTestId("fr-transfers")).toContainText("BT E2E 0001");
-    await noCustomer(page);
+    await noCustomer(page, "allowed");
     await page.getByTestId("fr-second-verify").click();
     await page.getByTestId("fr-confirm-send").click();
     await expect(page.getByTestId("fr-receipt")).toHaveAttribute("data-state", "verified");
@@ -211,7 +216,7 @@ test("not received, in a real browser: the operator's card follows finance by po
     await fin.page.goto("/confirmare/finance/requests");
     await fin.page.getByTestId(`fr-open-${order.number}`).click();
     await expect(fin.page.getByTestId("fr-task")).toBeVisible();
-    await noCustomer(fin.page);
+    await noCustomer(fin.page, "allowed");
     const startedAt = Date.now();
     // Staff 2.53.0: opening the task starts the check by itself (audited checking_started).
     await expect(fin.page.getByTestId("fr-task")).toHaveAttribute("data-state", "checking");
@@ -264,7 +269,7 @@ test("clarification, in a real browser: finance asks, the operator answers, the 
     await fin.page.goto("/confirmare/finance/requests");
     await fin.page.getByTestId("fr-category-clarification").click();
     await expect(fin.page.getByTestId(`fr-card-${order.number}`)).toBeVisible();
-    await noCustomer(fin.page);
+    await noCustomer(fin.page, "allowed");
     expect(fin.errors).toEqual([]);
   } finally { await fin.context.close(); }
 
@@ -328,7 +333,7 @@ test("an order of 23.10.2026 outside Confirmare (old date): the operator sends i
     await fin.page.getByTestId(`fr-open-${order.number}`).click();
     await expect(fin.page.getByTestId("fr-task-manual")).toBeVisible();
     await expect(fin.page.getByTestId("fr-payment-reference")).toHaveText(order.reference);
-    await noCustomer(fin.page);
+    await noCustomer(fin.page, "allowed");
     await fin.page.getByTestId("fr-mode-verified").click();
     await fin.page.getByTestId("fr-amount").fill("215,70");
     await fin.page.getByTestId("fr-bank-reference").fill("BT E2E 0043");
