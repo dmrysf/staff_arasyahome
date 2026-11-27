@@ -292,6 +292,25 @@ $check($ok($get($who['cdoc2'], '/confirmare/awb-queue'), 'another employee')['it
 $pdo->prepare("UPDATE operational_orders SET production_stage_id = 'delivery', production_completed_at = UTC_TIMESTAMP(6) WHERE global_order_id = ?")->execute([$g(2)]);
 $done = $ok($get($who['cdoc'], '/confirmare/awb-queue'), 'queue after stage 14 was completed')['items'];
 $check(count($done) === 1 && $done[0]['globalOrderId'] === $g(2) && $done[0]['stage'] === 'delivery', 'a completed order without an AWB stays in the AWB queue');
+// API 2.84.2 (Trend Home 65714, 2026-11-25): an AWB attempt the shop never received (rejected `not_received`) is not the
+// order's last attempt, so the order is not under "Needs correction"; a real refusal still is. TEST ONLY: the attempts are
+// written directly (the lost-answer settlement that writes `not_received` is tested with the operations relay itself).
+$attempt = static function (string $gid, string $outcome, string $at) use ($pdo, $orderUuid, $uuids): string {
+    $op = \Arasya\Operations\Support\Uuid::v4();
+    $pdo->prepare("INSERT INTO order_source_operations (operation_uuid, order_uuid, global_order_id, source_key, kind, employee_uuid, access_role, idempotency_key, request_hmac, state, outcome, requested_at, completed_at)
+        VALUES (?, ?, ?, 'trendhome', 'awb_create', ?, 'documents', ?, ?, 'rejected', ?, ?, ?)")->execute([$op, $orderUuid($gid), $gid, $uuids['cdoc'], 'test-attempt-' . bin2hex(random_bytes(8)), random_bytes(32), $outcome, $at, $at]);
+    return $op;
+};
+$lastAttempt = static function () use ($ok, $get, $who): mixed {
+    $items = $ok($get($who['cdoc'], '/confirmare/awb-queue'), 'queue with test attempts')['items'];
+    return count($items) === 1 && array_key_exists('lastAttempt', $items[0]) ? $items[0]['lastAttempt'] : 'missing';
+};
+$testAttempts = [$attempt($g(2), 'not_received', '2026-11-25 14:22:43.000000')];
+$check($lastAttempt() === null, 'an attempt the shop never received is not a last attempt: the order is not under "Needs correction"');
+$testAttempts[] = $attempt($g(2), 'awb_refused', '2026-11-25 14:00:00.000000');
+$check($lastAttempt() === 'rejected', 'an earlier real refusal stays the last attempt, behind a later attempt the shop never received');
+$pdo->prepare('DELETE FROM order_source_operations WHERE operation_uuid IN (?, ?)')->execute($testAttempts);
+$check($lastAttempt() === null, 'TEST ONLY: the test attempts are removed again');
 $error($operate($who['cdoc2'], $g(2), 'awb', ['parcels' => 1, 'expectedCod' => '503.30']), 403, 'CONFIRMARE_OPERATION_DENIED', 'a shop employee the order was not routed to cannot make its AWB');
 $error($operate($who['cop'], $g(2), 'awb', ['parcels' => 1, 'expectedCod' => '503.30']), 403, 'CONFIRMARE_OPERATION_DENIED', 'the operator never makes the AWB');
 $s2 = $state($who['cdoc'], $g(2));
