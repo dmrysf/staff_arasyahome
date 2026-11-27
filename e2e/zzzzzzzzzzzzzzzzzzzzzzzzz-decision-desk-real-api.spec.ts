@@ -106,6 +106,87 @@ test("the full-page editor: the money stays on screen while scrolling; yellow ne
   } finally { await context.close(); }
 });
 
+// Staff 2.61.1: the order arrives before the shop's read (source and edit catalog). Green waits for the shop's current
+// total instead of sending a decision without it (CONFIRMARE_TOTAL_REQUIRED); the slow answers are held by a gate the
+// test opens itself, never by a fixed wait.
+function gate() {
+  let open = () => {};
+  const opened = new Promise<void>((resolve) => { open = resolve; });
+  return { open, opened };
+}
+
+test("green waits for the shop's current total: slow shop read, slow catalog, failed read, a change being priced", async ({ browser }) => {
+  const { context, page, errors } = await signIn(browser, "cf.operator.e2e");
+  try {
+    const decisions: string[] = [];
+    page.on("request", (request) => { if (request.method() === "POST" && /\/decision$/.test(request.url())) decisions.push(request.url()); });
+    const order = `/confirmare/orders/${encodeURIComponent(D.orders.first)}`;
+
+    // The shop read is late: the order and the other two decisions are on screen, green is not, and a fast click sends nothing.
+    const source = gate();
+    await page.route("**/confirmare/orders/*/source", async (route) => { await source.opened; await route.continue(); });
+    await page.goto(order);
+    await expect(page.getByTestId("dd-yellow")).toBeEnabled();
+    await expect(page.getByTestId("dd-red")).toBeEnabled();
+    await expect(page.getByTestId("dd-green")).toBeDisabled();
+    await page.getByTestId("dd-green").dispatchEvent("click");
+    await page.getByTestId("dd-green").click({ force: true });
+    source.open();
+    await expect(page.getByTestId("dd-total")).toContainText(/\d/);
+    await expect(page.getByTestId("dd-green")).toBeEnabled();
+    await page.unroute("**/confirmare/orders/*/source");
+
+    // The shop answered but the edit catalog is late (the CI race of 2026-11-27): the shop's total is not on screen yet.
+    const catalog = gate();
+    await page.route("**/confirmare/orders/*/source/catalog", async (route) => { await catalog.opened; await route.continue(); });
+    await page.reload();
+    await expect(page.getByTestId("dd-yellow")).toBeEnabled();
+    await expect(page.getByTestId("dd-green")).toBeDisabled();
+    catalog.open();
+    await expect(page.getByTestId("dd-green")).toBeEnabled();
+    await page.unroute("**/confirmare/orders/*/source/catalog");
+
+    // The shop read fails: no total is invented, green stays disabled; yellow and red still work.
+    await page.route("**/confirmare/orders/*/source", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "SOURCE_UNAVAILABLE", message: "TEST shop unavailable" } }) }));
+    const failed = page.waitForResponse((response) => response.url().endsWith("/source") && response.status() === 503);
+    await page.reload();
+    await failed;
+    await expect(page.getByTestId("dd-yellow")).toBeEnabled();
+    await expect(page.getByTestId("dd-total")).not.toContainText(/\d/);
+    await expect(page.getByTestId("dd-green")).toBeDisabled();
+    await page.getByTestId("dd-green").dispatchEvent("click");
+    await page.unroute("**/confirmare/orders/*/source");
+    await page.reload();
+    await expect(page.getByTestId("dd-green")).toBeEnabled();
+    expect(decisions, "no decision was sent while the shop's total was missing").toEqual([]);
+    expect(errors).toEqual([]);
+  } finally { await context.close(); }
+});
+
+test("green waits while a change is being priced, then takes the new total by itself", async ({ browser }) => {
+  const { context, page, errors } = await signIn(browser, "cf.operator.e2e");
+  try {
+    const decisions: string[] = [];
+    page.on("request", (request) => { if (request.method() === "POST" && /\/decision$/.test(request.url())) decisions.push(request.url()); });
+    const priced = gate();
+    await page.route("**/confirmare/orders/*/source/preview", async (route) => { await priced.opened; await route.continue(); });
+    await page.goto(`/confirmare/orders/${encodeURIComponent(D.orders.third)}`);
+    await expect(page.getByTestId("dd-green")).toBeEnabled();
+    const plus = page.locator('[data-testid^="dd-qty-"][data-testid$="-plus"]').first();
+    await plus.click();
+    await expect(page.getByTestId("dd-savebar")).toBeVisible();
+    await expect(page.getByTestId("dd-green")).toBeDisabled();
+    await page.getByTestId("dd-green").dispatchEvent("click");
+    priced.open();
+    await expect(page.getByTestId("dd-save")).toBeEnabled();
+    await expect(page.getByTestId("dd-green")).toBeEnabled();
+    await page.getByRole("button", { name: /Renunță|Discard/ }).click();
+    await expect(page.getByTestId("dd-savebar")).toHaveCount(0);
+    expect(decisions).toEqual([]);
+    expect(errors).toEqual([]);
+  } finally { await context.close(); }
+});
+
 test("green confirms on the order the screen showed, then it can be undone before the system acts; red needs no reason", async ({ browser }) => {
   const { context, page, errors } = await signIn(browser, "cf.operator.e2e");
   try {
