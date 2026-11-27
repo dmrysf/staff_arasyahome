@@ -61,8 +61,8 @@ export type OrderFinanceRequest = {
   created?: boolean;
 };
 
-/** One card of the finance employee's inbox: the order number and the proforma, never an amount or the customer (the
- * task screen reads the money from the shop when it is opened). */
+/** One card of the finance employee's inbox: the order number, the proforma, the amounts Arasya last read for the task
+ * (display only) and, API 2.85.0, the customer's name (the task screen reads the money from the shop when it is opened). */
 export type InboxItem = {
   id: string; source: string; orderNumber: string; purpose: TaskPurpose; taskCode: string | null; ledger: Ledger; proforma: TaskProforma;
   state: RequestState; version: number; category: InboxCategory; kind: TaskKind; assignedToMe: boolean; outcome: RequestOutcome | null; reasonCode: string | null;
@@ -76,7 +76,16 @@ export type InboxItem = {
   /** API 2.80.0: this employee decided the task (Finalizate azi); a payment not found is looked for again at `recheckAt`. */
   decidedByMe: boolean;
   recheckAt: string | null;
+  /**
+   * API 2.85.0 (Finance Smart Search V1): the name on the order as Arasya received it (the delivery name, which is the
+   * billing name unless the customer gave another delivery person) and the company. null: not known (an older API).
+   */
+  customer: TaskCustomer | null;
+  /** API 2.85.0: the other amounts of the same read (order total, verified so far, cash on delivery left); display only. */
+  money: ListedMoney | null;
 };
+export type TaskCustomer = { name: string | null; company: string | null };
+export type ListedMoney = { total: string | null; verified: string | null; received: string | null; cod: string | null };
 export type ListedAdvance = { currency: string; required: string | null; remaining: string | null; readAt: string };
 /** `waiting` and `today` (API 2.77.9): the not received advances still open for a payment, the tasks decided today. */
 export type InboxCounts = Record<InboxCategory, number> & { waiting: number; today: number };
@@ -151,6 +160,17 @@ export type FinanceLookupItem = {
   proforma: { series: string | null; number: string } | null; task: { id: string; state: string; assignee: string | null; mine: boolean } | null;
 };
 
+/** API 2.85.0: one order of "Toate comenzile" (Finance Smart Search V1): what the ranking needs, no address or telephone. */
+export type FinanceSearchItem = {
+  globalOrderId: string; orderNumber: string; sourceKey: string; orderedAt: string | null; cod: boolean; financialState: string | null;
+  customer: TaskCustomer | null; proforma: { series: string | null; number: string } | null;
+  task: { id: string; state: string; outcome: string | null; open: boolean; assignee: string | null; mine: boolean } | null;
+  money: { currency: string; advance: string | null; remaining: string | null; verified: string | null; received: string | null; total: string | null; cod: string | null } | null;
+  /** A payment of the order was already verified. */
+  paid: boolean;
+};
+export type FinanceSearch = { items: FinanceSearchItem[]; truncated: boolean };
+
 export interface FinanceRequestsApi {
   orderFinanceRequest(globalOrderId: string, signal?: AbortSignal): Promise<OrderFinanceRequest>;
   requestFinance(globalOrderId: string, idempotencyKey: string): Promise<OrderFinanceRequest>;
@@ -169,6 +189,8 @@ export interface FinanceRequestsApi {
   financeHistory(query: { q?: string; before?: string | null; source?: string | null }, signal?: AbortSignal): Promise<FinanceHistory>;
   /** API 2.82.0: any order of her shops by order or proforma number, with or without a task. */
   financeLookup(query: string, signal?: AbortSignal): Promise<FinanceLookupItem[]>;
+  /** API 2.85.0 (Finance Smart Search V1): the candidates of her shops for the parsed criteria (read only). */
+  financeSearch(criteria: Record<string, string>, signal?: AbortSignal): Promise<FinanceSearch>;
   /** API 2.82.0: her own payment check of an order, whenever she wants (the open task, or a new one assigned to her). */
   financeCheckOrder(globalOrderId: string, idempotencyKey: string): Promise<{ requestId: string; created: boolean }>;
   financeOversight(filters: OversightFilters, signal?: AbortSignal): Promise<Oversight>;
@@ -309,6 +331,43 @@ export function mapInboxItem(value: unknown): InboxItem {
     requestedAt: instant(raw.requestedAt), updatedAt: instant(raw.updatedAt), decidedAt: optInstant(raw.decidedAt),
     advance: listedAdvance(raw.advance), awaitingPayment: raw.awaitingPayment === undefined ? false : bool(raw.awaitingPayment), orderedAt: optInstant(raw.orderedAt),
     decidedByMe: raw.decidedByMe === undefined ? false : bool(raw.decidedByMe), recheckAt: optInstant(raw.recheckAt),
+    customer: taskCustomer(raw.customer), money: listedMoney(raw.money),
+  };
+}
+
+function taskCustomer(value: unknown): TaskCustomer | null {
+  if (value == null) return null;
+  const raw = obj(value);
+  return { name: optStr(raw.name, 200), company: optStr(raw.company, 200) };
+}
+
+function listedMoney(value: unknown): ListedMoney | null {
+  if (value == null) return null;
+  const raw = obj(value);
+  return { total: money(raw.total), verified: money(raw.verified), received: money(raw.received), cod: money(raw.cod) };
+}
+
+/** The most candidates one search answer may carry (API FinanceSearch::POOL_LIMIT). */
+export const SEARCH_MAX_ITEMS = 250;
+
+function mapSearch(value: unknown): FinanceSearch {
+  const raw = obj(value);
+  return {
+    truncated: raw.truncated === true,
+    items: list(raw.items, SEARCH_MAX_ITEMS, (entry) => {
+      const item = obj(entry);
+      const pf = item.proforma == null ? null : obj(item.proforma);
+      const task = item.task == null ? null : obj(item.task);
+      const m = item.money == null ? null : obj(item.money);
+      return {
+        globalOrderId: str(item.globalOrderId, 200), orderNumber: str(item.orderNumber, 64), sourceKey: str(item.sourceKey, 40), orderedAt: optInstant(item.orderedAt),
+        cod: bool(item.cod), financialState: optStr(item.financialState, 40), customer: taskCustomer(item.customer),
+        proforma: pf === null ? null : { series: optStr(pf.series, 20), number: str(pf.number, 40) },
+        task: task === null ? null : { id: uuid(task.id), state: str(task.state, 40), outcome: optStr(task.outcome, 40), open: bool(task.open), assignee: optStr(task.assignee, 200), mine: bool(task.mine) },
+        money: m === null ? null : { currency: str(m.currency, 3), advance: money(m.advance), remaining: money(m.remaining), verified: money(m.verified), received: money(m.received), total: money(m.total), cod: money(m.cod) },
+        paid: bool(item.paid),
+      };
+    }),
   };
 }
 
@@ -505,6 +564,8 @@ export function financeRequestsHttp(http: Http): FinanceRequestsApi {
     correctPayment: (requestId, input, key) => http.request(task(requestId, "/correct-payment"), post(key, input), mapFollowUp),
     financeHistory: (query, signal) => http.request(`/confirmare/finance/requests/history${historyQuery(query)}`, { signal, cache: "no-store" }, mapHistory),
     financeLookup: (query, signal) => http.request(`/confirmare/finance/lookup?${new URLSearchParams({ q: query }).toString()}`, { signal, cache: "no-store" }, mapLookup),
+    // A POST (read only): the name words never travel in a URL, so no access log keeps them.
+    financeSearch: (criteria, signal) => http.request("/confirmare/finance/search", { method: "POST", signal, cache: "no-store", body: JSON.stringify(criteria) }, mapSearch),
     financeCheckOrder: (globalOrderId, key) => http.request("/confirmare/finance/check", post(key, { globalOrderId }), (value) => { const raw = value as Record<string, unknown>; return { requestId: uuid(raw?.requestId), created: bool(raw?.created) }; }),
     financeOversight: (filters, signal) => http.request(`/confirmare/finance/oversight${oversightQuery(filters)}`, { signal, cache: "no-store" }, mapOversight),
     financeOversightDetail: (requestId, signal) => http.request(`/confirmare/finance/oversight/${encodeURIComponent(requestId)}`, { signal, cache: "no-store" }, mapOversightDetail),

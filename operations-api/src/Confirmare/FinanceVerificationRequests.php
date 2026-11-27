@@ -358,6 +358,239 @@ final readonly class FinanceVerificationRequests
 
     public const LOOKUP_LIMIT = 20;
 
+    /** API 2.85.0: the most candidates one search answers, and the most each criterion contributes before they are merged. */
+    public const SEARCH_POOL_LIMIT = 250;
+    private const SEARCH_SET_LIMIT = 1000;
+    private const SEARCH_REF_LIMIT = 50;
+    /** The widest amount tolerance (bani): 1000 RON. */
+    private const SEARCH_MAX_TOLERANCE = 100000;
+
+    /**
+     * API 2.85.0 (Finance Smart Search V1, owner 2026-11-27): the candidate orders a bank transfer may belong to, from the
+     * criteria Staff parsed out of what the employee typed or pasted (POST /confirmare/finance/search: a body, so the name
+     * words never appear in a URL or an access log). Read only: no shop
+     * call, no task, no event, no write of any kind; the result is a pool Staff ranks and the employee opens one herself.
+     *
+     * Criteria (each optional, comma separated, validated strictly; Staff sends folded words and whole bani):
+     * - orders: order numbers (also of a payment reference such as TH66587), exact;
+     * - proformas: proforma numbers without leading zeros, of any task of the order;
+     * - amounts + tolerance: bani; the latest task's advance asked, advance left, order total, cash on delivery left and
+     *   verified amount (finance_task_amounts, the display copy) within the tolerance;
+     * - names: words of three letters or more, matched in the order's name and company (document_context) with an
+     *   accent-insensitive collation; a word of five letters or more also by its first and last three letters, so a
+     *   typing error in the middle still reaches the pool (Staff measures the real similarity).
+     * Scope: the employee's finance shops (record or verify), Confirmare orders, as the lookup. Each criterion contributes
+     * at most SEARCH_SET_LIMIT orders, merged as exact references, then orders matching a name and an amount, then the
+     * closest amounts, then the most name hits, up to SEARCH_POOL_LIMIT (`truncated` when more existed).
+     *
+     * @param array<string, mixed> $query
+     * @return array{items: list<array<string, mixed>>, truncated: bool}
+     */
+    public function search(EmployeeIdentity $actor, array $query): array
+    {
+        if (array_diff(array_keys($query), ['orders', 'proformas', 'amounts', 'tolerance', 'names', 'source']) !== []) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Only orders, proformas, amounts, tolerance, names and source are accepted.');
+        }
+        $this->requireStaff($actor);
+        $sources = $this->financeSources($actor);
+        if ($sources === []) {
+            throw new ApiException(403, 'FINANCE_SCOPE_DENIED', 'You have no finance scope.');
+        }
+        $source = is_string($query['source'] ?? null) && $query['source'] !== '' ? (string) $query['source'] : null;
+        if ($source !== null) {
+            if (!in_array($source, $sources, true)) {
+                return ['items' => [], 'truncated' => false];
+            }
+            $sources = [$source];
+        }
+        $orders = self::searchList($query['orders'] ?? null, '/^[0-9]{1,12}$/D', 10, 'orders');
+        $proformas = array_map(static fn (string $n): string => ltrim($n, '0') === '' ? '0' : ltrim($n, '0'), self::searchList($query['proformas'] ?? null, '/^[0-9]{1,8}$/D', 10, 'proformas'));
+        $amounts = array_map('intval', self::searchList($query['amounts'] ?? null, '/^[1-9][0-9]{0,10}$/D', 10, 'amounts'));
+        // Two-letter words never search every order of a shop (Staff filters them in its own list only).
+        $names = array_values(array_filter(self::searchList($query['names'] ?? null, '/^[a-z0-9]{2,40}$/D', 8, 'names'), static fn (string $n): bool => strlen($n) >= 3));
+        $toleranceText = $query['tolerance'] ?? '1000';
+        if (!is_string($toleranceText) || preg_match('/^[0-9]{1,6}$/D', $toleranceText) !== 1 || (int) $toleranceText > self::SEARCH_MAX_TOLERANCE) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'tolerance is not valid.', ['field' => 'tolerance']);
+        }
+        $tolerance = (int) $toleranceText;
+        if ($orders === [] && $proformas === [] && $amounts === [] && $names === []) {
+            return ['items' => [], 'truncated' => false];
+        }
+        $in = implode(', ', array_fill(0, count($sources), '?'));
+        $scope = "o.source_key IN ({$in}) AND o.workflow_cohort = 'confirmare'";
+
+        $refs = [];
+        if ($orders !== [] || $proformas !== []) {
+            $conditions = [];
+            $args = $sources;
+            if ($orders !== []) {
+                $conditions[] = 'o.order_number IN (' . implode(', ', array_fill(0, count($orders), '?')) . ')';
+                array_push($args, ...$orders);
+            }
+            if ($proformas !== []) {
+                $conditions[] = "EXISTS (SELECT 1 FROM finance_verification_requests p WHERE p.order_uuid = o.order_uuid AND p.proforma_number IS NOT NULL
+                    AND TRIM(LEADING '0' FROM p.proforma_number) IN (" . implode(', ', array_fill(0, count($proformas), '?')) . '))';
+                array_push($args, ...$proformas);
+            }
+            $statement = $this->pdo->prepare("SELECT o.order_uuid FROM operational_orders o WHERE {$scope} AND (" . implode(' OR ', $conditions) . ') ORDER BY o.created_at DESC LIMIT ' . self::SEARCH_REF_LIMIT);
+            $statement->execute($args);
+            $refs = array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN));
+        }
+
+        $byAmount = [];
+        if ($amounts !== []) {
+            // Whole bani on both sides: DECIMAL(12,2) * 100 is exact, the amounts are integers.
+            $columns = ['a.remaining_amount', 'a.required_amount', 'a.order_total', 'a.cod_remaining', 'a.verified_amount'];
+            $within = [];
+            $diffs = [];
+            $args = $sources;
+            $diffArgs = [];
+            foreach ($amounts as $amount) {
+                foreach ($columns as $column) {
+                    $within[] = "({$column} * 100 BETWEEN ? AND ?)";
+                    array_push($args, $amount - $tolerance, $amount + $tolerance);
+                    $diffs[] = "COALESCE(ABS({$column} * 100 - ?), 99999999999)";
+                    $diffArgs[] = $amount;
+                }
+            }
+            $statement = $this->pdo->prepare('SELECT r.order_uuid, MIN(LEAST(' . implode(', ', $diffs) . ")) AS diff
+                FROM finance_task_amounts a INNER JOIN finance_verification_requests r ON r.request_uuid = a.request_uuid INNER JOIN operational_orders o ON o.order_uuid = r.order_uuid
+                WHERE {$scope} AND (" . implode(' OR ', $within) . ') GROUP BY r.order_uuid ORDER BY diff, r.order_uuid LIMIT ' . self::SEARCH_SET_LIMIT);
+            $statement->execute([...$diffArgs, ...$args]);
+            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $byAmount[(string) $row['order_uuid']] = (int) $row['diff'];
+            }
+        }
+
+        $byName = [];
+        if ($names !== []) {
+            // The name and the company are read out of the JSON once per order (a materialized derived table: LIMIT keeps
+            // MySQL and MariaDB from merging it, which would extract them again for every pattern).
+            $hits = [];
+            $hitArgs = [];
+            foreach ($names as $word) {
+                $patterns = [['x.nm', '%' . $word . '%', 3], ['x.co', '%' . $word . '%', 2]];
+                if (strlen($word) >= 5) {
+                    $patterns[] = ['x.nm', '%' . substr($word, 0, 3) . '%', 1];
+                    $patterns[] = ['x.nm', '%' . substr($word, -3) . '%', 1];
+                }
+                foreach ($patterns as [$column, $pattern, $weight]) {
+                    $hits[] = "(CASE WHEN {$column} LIKE ? THEN {$weight} ELSE 0 END)";
+                    $hitArgs[] = $pattern;
+                }
+            }
+            $folded = static fn (string $path): string => "CONVERT(JSON_UNQUOTE(JSON_EXTRACT(o.document_context, '{$path}')) USING utf8mb4) COLLATE utf8mb4_unicode_ci";
+            $statement = $this->pdo->prepare('SELECT x.order_uuid, (' . implode(' + ', $hits) . ') AS hits
+                FROM (SELECT o.order_uuid, o.created_at, ' . $folded('$.name') . ' AS nm, ' . $folded('$.company') . " AS co FROM operational_orders o
+                    WHERE {$scope} AND o.document_context IS NOT NULL LIMIT 18446744073709551615) x
+                HAVING hits > 0 ORDER BY hits DESC, x.created_at DESC, x.order_uuid LIMIT " . self::SEARCH_SET_LIMIT);
+            $statement->execute([...$hitArgs, ...$sources]);
+            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $byName[(string) $row['order_uuid']] = (int) $row['hits'];
+            }
+        }
+
+        // Merge: exact references, a name and an amount (closest amount first), the closest amounts, the most name hits.
+        $pool = array_fill_keys($refs, true);
+        $both = array_keys(array_intersect_key($byAmount, $byName));
+        usort($both, static fn (string $a, string $b): int => [$byAmount[$a], -$byName[$a]] <=> [$byAmount[$b], -$byName[$b]]);
+        $total = count($pool + $byAmount + $byName);
+        foreach ([$both, array_keys($byAmount), array_keys($byName)] as $ids) {
+            foreach ($ids as $id) {
+                if (count($pool) >= self::SEARCH_POOL_LIMIT) {
+                    break 2;
+                }
+                $pool[$id] = true;
+            }
+        }
+        $truncated = $total > count($pool) || count($byAmount) >= self::SEARCH_SET_LIMIT || count($byName) >= self::SEARCH_SET_LIMIT;
+        if ($pool === []) {
+            return ['items' => [], 'truncated' => false];
+        }
+        $ids = array_keys($pool);
+        $list = implode(', ', array_fill(0, count($ids), '?'));
+        // The orders, then their latest task, its amounts and its assignee, and whether a payment was verified: a few
+        // indexed reads for the whole pool (no correlated "latest task" join per order).
+        $statement = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.payment_method, o.source_financial_state, o.document_context,
+                COALESCE(o.source_submitted_at, o.created_at) AS ordered_at FROM operational_orders o WHERE o.order_uuid IN ({$list})");
+        $statement->execute($ids);
+        $rows = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $rows[(string) $row['order_uuid']] = $row;
+        }
+        $statement = $this->pdo->prepare("SELECT r.order_uuid, r.request_uuid, r.state, r.outcome, r.open_order_uuid, r.proforma_series, r.proforma_number, r.assigned_employee_uuid
+            FROM finance_verification_requests r WHERE r.order_uuid IN ({$list}) ORDER BY r.order_uuid, r.requested_at DESC, r.request_uuid DESC");
+        $statement->execute($ids);
+        $latest = [];
+        $paid = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $order = (string) $row['order_uuid'];
+            $latest[$order] ??= $row;
+            if ($row['state'] === 'verified') {
+                $paid[$order] = true;
+            }
+        }
+        $amountRows = [];
+        $assignees = [];
+        if ($latest !== []) {
+            $requests = array_map(static fn (array $row): string => (string) $row['request_uuid'], array_values($latest));
+            $statement = $this->pdo->prepare('SELECT request_uuid, currency, required_amount, remaining_amount, verified_amount, received_amount, order_total, cod_remaining FROM finance_task_amounts
+                WHERE request_uuid IN (' . implode(', ', array_fill(0, count($requests), '?')) . ')');
+            $statement->execute($requests);
+            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $amountRows[(string) $row['request_uuid']] = $row;
+            }
+            $assignees = $this->names(array_values(array_unique(array_filter(array_map(static fn (array $row): mixed => $row['assigned_employee_uuid'], array_values($latest)), 'is_string'))));
+        }
+        $items = [];
+        foreach ($ids as $id) {
+            $row = $rows[$id] ?? null;
+            if ($row === null) {
+                continue;
+            }
+            $request = $latest[$id] ?? null;
+            $a = $request === null ? null : ($amountRows[(string) $request['request_uuid']] ?? null);
+            $items[] = [
+                'globalOrderId' => (string) $row['global_order_id'],
+                'orderNumber' => (string) $row['order_number'],
+                'sourceKey' => (string) $row['source_key'],
+                'orderedAt' => $row['ordered_at'] === null ? null : self::iso((string) $row['ordered_at']),
+                'cod' => $row['payment_method'] === 'cod',
+                'financialState' => $row['source_financial_state'],
+                'customer' => self::customerOf($row['document_context']),
+                'proforma' => $request === null || $request['proforma_number'] === null ? null : ['series' => $request['proforma_series'], 'number' => (string) $request['proforma_number']],
+                'task' => $request === null ? null : ['id' => (string) $request['request_uuid'], 'state' => (string) $request['state'], 'outcome' => $request['outcome'],
+                    'open' => $request['open_order_uuid'] !== null, 'assignee' => $request['assigned_employee_uuid'] === null ? null : ($assignees[(string) $request['assigned_employee_uuid']] ?? null),
+                    'mine' => $request['assigned_employee_uuid'] === $actor->employeeUuid],
+                'money' => $a === null ? null : ['currency' => (string) $a['currency'], 'advance' => self::money2($a['required_amount']), 'remaining' => self::money2($a['remaining_amount']),
+                    'verified' => self::money2($a['verified_amount']), 'received' => self::money2($a['received_amount']), 'total' => self::money2($a['order_total']), 'cod' => self::money2($a['cod_remaining'])],
+                'paid' => isset($paid[$id]),
+            ];
+        }
+        return ['items' => $items, 'truncated' => $truncated];
+    }
+
+    /** @return list<string> one comma-separated search criterion, each entry matching `$pattern`, at most `$max` */
+    private static function searchList(mixed $value, string $pattern, int $max, string $field): array
+    {
+        if ($value === null || $value === '') {
+            return [];
+        }
+        if (!is_string($value) || strlen($value) > 400) {
+            throw new ApiException(422, 'VALIDATION_FAILED', "{$field} is not valid.", ['field' => $field]);
+        }
+        $entries = array_values(array_unique(explode(',', $value)));
+        if (count($entries) > $max) {
+            throw new ApiException(422, 'VALIDATION_FAILED', "{$field} has too many entries.", ['field' => $field]);
+        }
+        foreach ($entries as $entry) {
+            if (preg_match($pattern, $entry) !== 1) {
+                throw new ApiException(422, 'VALIDATION_FAILED', "{$field} is not valid.", ['field' => $field]);
+            }
+        }
+        return $entries;
+    }
+
     /**
      * API 2.82.0: the finance employee starts (or continues) the payment check of an order herself, without an operator's
      * request and whenever she wants, also minutes after her "NU". Answers the task to open:
@@ -454,7 +687,10 @@ final readonly class FinanceVerificationRequests
         $from = 'FROM finance_verification_requests r INNER JOIN operational_orders o ON o.order_uuid = r.order_uuid';
         // API 2.77.9: the advance amount the shop last showed for the task (finance_task_amounts, written by this
         // employee's own task reads and by bin/finance-task-amounts.php). One join, never a shop call per row.
-        $select = 'SELECT r.*, o.order_number, COALESCE(o.source_submitted_at, o.created_at) AS ordered_at, a.currency AS amount_currency, a.required_amount, a.remaining_amount, a.read_at AS amount_read_at';
+        // API 2.85.0 (Finance Smart Search V1): plus the customer's name (o.document_context, Arasya's own copy) and the other
+        // amounts of the same read, so the desk searches its list by name and amount without a request.
+        $select = 'SELECT r.*, o.order_number, o.document_context, COALESCE(o.source_submitted_at, o.created_at) AS ordered_at, a.currency AS amount_currency, a.required_amount, a.remaining_amount, a.read_at AS amount_read_at,
+            a.order_total, a.verified_amount, a.received_amount, a.cod_remaining';
         $fromAmounts = "{$from} LEFT JOIN finance_task_amounts a ON a.request_uuid = r.request_uuid";
         $open = $this->pdo->prepare("{$select} {$fromAmounts} WHERE {$openWhere} ORDER BY r.requested_at, r.request_uuid LIMIT " . (self::OPEN_LIMIT + 1));
         $open->execute($openArgs);
@@ -530,7 +766,7 @@ final readonly class FinanceVerificationRequests
                 }
             }
         }
-        return ['request' => $this->item($request + ['order_number' => $row['order_number'] ?? ''], $actor), 'live' => $live, 'progress' => $this->progress((string) $request['order_uuid'])]
+        return ['request' => $this->item($request + ['order_number' => $row['order_number'] ?? '', 'document_context' => $row['document_context'] ?? null], $actor), 'live' => $live, 'progress' => $this->progress((string) $request['order_uuid'])]
             + $this->allowed($actor, $request, $live, $target);
     }
 
@@ -859,7 +1095,8 @@ final readonly class FinanceVerificationRequests
             $where .= ' AND (r.updated_at < ? OR (r.updated_at = ? AND r.request_uuid > ?))';
             array_push($args, $at, $at, $m[2]);
         }
-        $statement = $this->pdo->prepare('SELECT r.*, o.order_number, COALESCE(o.source_submitted_at, o.created_at) AS ordered_at, a.currency AS amount_currency, a.required_amount, a.remaining_amount, a.read_at AS amount_read_at
+        $statement = $this->pdo->prepare('SELECT r.*, o.order_number, o.document_context, COALESCE(o.source_submitted_at, o.created_at) AS ordered_at, a.currency AS amount_currency, a.required_amount, a.remaining_amount, a.read_at AS amount_read_at,
+                a.order_total, a.verified_amount, a.received_amount, a.cod_remaining
             FROM finance_verification_requests r INNER JOIN operational_orders o ON o.order_uuid = r.order_uuid LEFT JOIN finance_task_amounts a ON a.request_uuid = r.request_uuid
             WHERE ' . $where . ' ORDER BY r.updated_at DESC, r.request_uuid LIMIT ' . (self::HISTORY_PAGE + 1));
         $statement->execute($args);
@@ -1329,7 +1566,56 @@ final readonly class FinanceVerificationRequests
             'awaitingPayment' => (bool) ($row['awaiting_payment'] ?? false),
             // When the customer placed the order (the shop's submission time), for the list's order date.
             'orderedAt' => ($row['ordered_at'] ?? null) === null ? null : self::iso((string) $row['ordered_at']),
+        ] : []) + (array_key_exists('document_context', $row) ? [
+            // API 2.85.0 (Finance Smart Search V1): the name on the order, from Arasya's own copy (no shop call).
+            'customer' => self::customerOf($row['document_context']),
+        ] : []) + (array_key_exists('order_total', $row) ? [
+            // API 2.85.0: the other amounts of the task's last read (display and search only, never a decision input).
+            'money' => $row['amount_read_at'] === null ? null : [
+                'total' => self::money2($row['order_total']),
+                'verified' => self::money2($row['verified_amount']),
+                'received' => self::money2($row['received_amount']),
+                'cod' => self::money2($row['cod_remaining']),
+            ],
         ] : []);
+    }
+
+    /**
+     * API 2.85.0: the customer's name and company as Arasya received them with the order (operational_orders.document_context,
+     * the printable delivery identity: the delivery name, which is the billing name unless the customer named another
+     * delivery person). Name and company only: never the address or the telephone. null when neither is known.
+     *
+     * @return array{name: string|null, company: string|null}|null
+     */
+    private static function customerOf(mixed $context): ?array
+    {
+        $decoded = is_string($context) && $context !== '' ? json_decode($context, true) : null;
+        if (!is_array($decoded)) {
+            return null;
+        }
+        $text = static function (mixed $value): ?string {
+            if (!is_string($value)) {
+                return null;
+            }
+            $value = trim((string) preg_replace('/\s+/u', ' ', $value));
+            return $value === '' ? null : mb_substr($value, 0, 120);
+        };
+        $name = $text($decoded['name'] ?? null);
+        $company = $text($decoded['company'] ?? null);
+        return $name === null && $company === null ? null : ['name' => $name, 'company' => $company];
+    }
+
+    /** A DECIMAL(12,2) column as the API sends amounts ("600.00"), or null. Strings only (no floating point). */
+    private static function money2(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        $text = (string) $value;
+        if (preg_match('/^(-?)0*([0-9]+)(?:\.([0-9]{1,6}))?$/D', $text, $m) !== 1) {
+            return null;
+        }
+        return $m[1] . $m[2] . '.' . substr(($m[3] ?? '') . '00', 0, 2);
     }
 
     /**
@@ -2392,7 +2678,7 @@ final readonly class FinanceVerificationRequests
         // Any order of a source (API 2.50.0): an order outside Confirmare has no confirmation row and keeps its workflow.
         $statement = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.source_key, o.source_order_id, o.order_number, o.workflow_cohort, o.payment_method, o.operational_status, o.source_reported_unavailable_at,
                 o.source_financial_state, o.source_financial_basis, o.source_financial_attention, o.source_financial_pricing, o.source_pricing_fingerprint, o.source_submitted_at, o.created_at, o.source_commerce_status_code,
-                o.cancellation_state, o.workflow_cohort_reason, o.source_changed_at, c.status, c.assigned_employee_uuid, c.decided_by_employee_uuid
+                o.cancellation_state, o.workflow_cohort_reason, o.source_changed_at, o.document_context, c.status, c.assigned_employee_uuid, c.decided_by_employee_uuid
             FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE {$where}");
         $statement->execute([$value]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);

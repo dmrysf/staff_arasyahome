@@ -156,10 +156,12 @@ test("finance: any order of her shops is found by its number, with or without a 
   const { context, page, errors } = await signIn(browser, "cf.finrec.e2e");
   try {
     await page.goto("/confirmare/finance/requests");
+    // Staff 2.62.0 (Finance Smart Search V1): one search box; "Toate comenzile" asks the read-only candidate search.
+    await page.getByTestId("fd-search").fill(number(D.orders.third));
+    await page.getByTestId("fd-scope-all").click();
     await expect(page.getByTestId("fd-lookup")).toBeVisible();
-    await page.getByTestId("fd-lookup-input").fill(number(D.orders.third));
-    await page.getByTestId("fd-lookup-search").click();
     await expect(page.getByTestId(`fd-lookup-${number(D.orders.third)}`)).toBeVisible();
+    await expect(page.getByTestId(`fd-lookup-why-${number(D.orders.third)}`)).toContainText(/comand|order/i);
     await shoot(page, "finance-desk");
     expect(errors).toEqual([]);
   } finally { await context.close(); }

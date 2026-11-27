@@ -107,6 +107,8 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/finance-request/{resubmit|cancel}  {expectedVersion, reasonCode?} + Idempotency-Key
  *   GET  /confirmare/finance/requests                      the finance employee's own tasks (inbox)
  *   GET  /confirmare/finance/lookup?q=                     any order of her shops by order or proforma number (API 2.82.0)
+ *   POST /confirmare/finance/search {orders?, proformas?, amounts?, tolerance?, names?, source?}
+ *                                                          candidate orders of a bank transfer, read only (API 2.85.0)
  *   POST /confirmare/finance/check                         {globalOrderId} + Idempotency-Key: her own payment check, with or
  *                                                          without a task, whenever she wants (API 2.82.0)
  *   GET  /confirmare/finance/requests/{requestId}          one task, minimized (audited, no-store)
@@ -337,6 +339,15 @@ final readonly class ConfirmareController
         // API 2.82.0 (Operation Simplification V1): the finance employee finds any order of her shops and checks it herself.
         if ($path === '/confirmare/finance/lookup' && $request->method === 'GET') {
             return $this->json($this->requests->lookup($actor, $request->query('q')));
+        }
+        // API 2.85.0 (Finance Smart Search V1): the candidate orders of the parsed criteria, read only. A POST so the name
+        // words a finance employee types never travel in a URL (web server access logs keep URLs, never request bodies).
+        if ($path === '/confirmare/finance/search') {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->requests->search($actor, $request->json(2048)));
         }
         if ($path === '/confirmare/finance/check') {
             if ($request->method !== 'POST') {

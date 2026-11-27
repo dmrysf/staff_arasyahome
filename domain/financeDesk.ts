@@ -183,3 +183,15 @@ export const takeDeskDone = (): string | null => { const value = lastDone; lastD
 let deskSource: string | null = null;
 export const deskSourceFilter = (): string | null => deskSource;
 export const setDeskSourceFilter = (source: string | null): void => { deskSource = source; };
+
+/**
+ * Staff 2.62.0 (Finance Smart Search V1): the search of the desk, kept while the employee opens a result and comes back
+ * (the text, the scope, the amount tolerance, "search as an amount too", the view and the scroll position). Memory only:
+ * a customer name typed in the search is never written to the browser's storage.
+ */
+export type DeskSearchState = { query: string; scope: "current" | "all"; tolerance: number; asAmount: boolean; view: DeskView; scrollY: number };
+const DESK_SEARCH_DEFAULT: DeskSearchState = { query: "", scope: "current", tolerance: 1000, asAmount: false, view: "todo", scrollY: 0 };
+let deskSearch: DeskSearchState = DESK_SEARCH_DEFAULT;
+export const deskSearchState = (): DeskSearchState => deskSearch;
+export const setDeskSearchState = (next: Partial<DeskSearchState>): void => { deskSearch = { ...deskSearch, ...next }; };
+export const resetDeskSearchState = (): void => { deskSearch = DESK_SEARCH_DEFAULT; };

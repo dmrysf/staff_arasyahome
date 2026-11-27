@@ -5,10 +5,14 @@ import { sourceLabel, type ConfirmareApi, type ConfirmareSource } from "../../do
 import { formatFinanceMoney, normalizeAmount, validReference } from "../../domain/confirmareFinance";
 import {
   CLARIFICATION_REASONS, canOverseeFinance, financeOrderPath, financeTaskPath, maskIban, oversightPath, proformaLabel, reasonLabel, requestErrorKey, stateLabel, taskCodeLabel, taskOrderId,
-  type ClarificationReason, type DecisionAnswer, type FinanceLookupItem, type FinanceTask, type Inbox, type InboxItem, type Transfer,
+  type ClarificationReason, type DecisionAnswer, type FinanceSearchItem, type FinanceTask, type Inbox, type InboxItem, type TaskCustomer, type Transfer,
 } from "../../domain/financeRequests";
 import {
-  answerLost, bani, bucharestClock, checkEntry, checkMoney, checkPayment, deskRows, deskSourceFilter, deskable, fromBani, nextDeskTask, noteDeskDone, paymentEffect, setDeskSourceFilter, takeDeskDone, validValueDate, waitParts,
+  DEFAULT_TOLERANCE, MAX_TOLERANCE, SEARCH_MAX_LENGTH, TOLERANCES, amountBani, baniText, exactQuery, hasCriteria, inboxCandidate, parseBani, parseSearch, rankCandidates, searchCriteria, serverSearchable,
+  type CandidateView, type ParsedSearch, type Ranked, type SearchReason,
+} from "../../domain/financeSearch";
+import {
+  answerLost, bani, bucharestClock, checkEntry, checkMoney, checkPayment, deskRows, deskSearchState, deskSourceFilter, deskable, fromBani, nextDeskTask, noteDeskDone, paymentEffect, setDeskSearchState, setDeskSourceFilter, takeDeskDone, validValueDate, waitParts,
   type CheckMoney, type DeskView, type PaymentEffect, type PaymentForm, type PaymentInput,
 } from "../../domain/financeDesk";
 import { createIdempotencyKey } from "../../services/idempotency";
@@ -55,19 +59,78 @@ function rowTarget(item: InboxItem): string {
 
 // ---- The desk ---------------------------------------------------------------------------------------------------
 
+/** Staff 2.62.0: the name shown with the order number (the company when the order names one and no person). */
+const clientLabel = (customer: TaskCustomer | null | undefined): string | null => customer?.name ?? customer?.company ?? null;
+
+type ReasonText = (reason: SearchReason) => string;
+function useReasonText(): ReasonText {
+  const { t } = useI18n();
+  return (reason) => {
+    const kind = reason.kind && reason.kind !== "advance" ? ` (${t(`fd.kind.${reason.kind}` as MessageKey)})` : "";
+    if (reason.code === "amountNear") return `${t("fd.why.amountNear")}${kind}`;
+    if (reason.code === "amountExact") return `${t("fd.why.amountExact")}${kind}`;
+    return t(`fd.why.${reason.code}` as MessageKey);
+  };
+}
+
+/** The ranking view of an order of "Toate comenzile". */
+const searchCandidate = (item: FinanceSearchItem): CandidateView => ({
+  orderNumber: item.orderNumber, source: item.sourceKey, name: item.customer?.name ?? null, company: item.customer?.company ?? null, proforma: item.proforma, orderedAt: item.orderedAt,
+  advance: amountBani(item.money?.advance), remaining: amountBani(item.money?.remaining), total: amountBani(item.money?.total), cod: amountBani(item.money?.cod), verified: amountBani(item.money?.verified), paid: item.paid,
+});
+
+/**
+ * Staff 2.62.0 (Finance Smart Search V1): "Toate comenzile". The parsed criteria go to the API 300 ms after the last key
+ * (GET /confirmare/finance/search, read only); a newer query aborts the older request and an answer is shown only for the
+ * query it was asked for, so a late answer never replaces a newer one. The pool is ranked here like the current list.
+ */
+function useAllOrders(service: ConfirmareApi, parsed: ParsedSearch, tolerance: number, source: string | null, enabled: boolean) {
+  const criteria = useMemo(() => searchCriteria(parsed, tolerance, source), [parsed, tolerance, source]);
+  const key = JSON.stringify(criteria);
+  const ready = enabled && serverSearchable(parsed);
+  const [answer, setAnswer] = useState<{ key: string; items: FinanceSearchItem[]; truncated: boolean } | null>(null);
+  const [failure, setFailure] = useState<{ key: string; error: unknown } | null>(null);
+  useEffect(() => {
+    if (!ready) return undefined;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      service.financeSearch(criteria, controller.signal).then(
+        (result) => { if (!controller.signal.aborted) setAnswer({ key, ...result }); },
+        (caught: unknown) => { if (!controller.signal.aborted) setFailure({ key, error: caught }); },
+      );
+    }, 300);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [ready, key, criteria, service]);
+  const current = ready && answer?.key === key ? answer : null;
+  const ranked = useMemo(() => (current ? rankCandidates(parsed, current.items, searchCandidate, tolerance) : null), [current, parsed, tolerance]);
+  return { ready, ranked, truncated: current?.truncated ?? false, error: ready && failure?.key === key ? failure.error : null, busy: ready && current === null && failure?.key !== key };
+}
+
 export function FinanceDeskScreen({ employee, service, navigate }: { employee: Employee; service: ConfirmareApi; navigate: (path: string) => void }) {
   const { t } = useI18n();
   const errorText = useErrorText();
-  const [view, setView] = useState<DeskView>("todo");
+  // Staff 2.62.0: the search, its scope and tolerance, the view and the scroll come back when the employee returns.
+  const [saved] = useState(() => deskSearchState());
+  const [view, setViewState] = useState<DeskView>(saved.view);
   const [source, setSource] = useState<string | null>(deskSourceFilter());
-  const [query, setQuery] = useState("");
+  const [query, setQueryState] = useState(saved.query);
+  const [scope, setScopeState] = useState<"current" | "all">(saved.scope);
+  const [tolerance, setToleranceState] = useState(saved.tolerance);
+  const [asAmount, setAsAmountState] = useState(saved.asAmount);
   const [finished] = useState(() => takeDeskDone());
   const load = useMemo(() => (signal: AbortSignal) => service.financeInbox(signal), [service]);
   const inbox = useAutoRefresh(load, "finance-desk");
   const data = inbox.data;
   // The waiting time is measured at the list's own read (no clock read while rendering).
   const now = inbox.updatedAt ? new Date(inbox.updatedAt).getTime() : 0;
-  const rows = useMemo(() => (data ? deskRows(data, view, source, query, now) : null), [data, view, source, query, now]);
+  const parsed = useMemo(() => parseSearch(query, { numbersAsAmounts: asAmount }), [query, asAmount]);
+  const searching = hasCriteria(parsed);
+  const baseRows = useMemo(() => (data ? deskRows(data, view, source, "", now) : null), [data, view, source, now]);
+  // The current list is searched in the browser (the inbox carries names and amounts): no request per key.
+  const ranked = useMemo(() => (baseRows && searching ? rankCandidates(parsed, baseRows, inboxCandidate, tolerance) : null), [baseRows, searching, parsed, tolerance]);
+  const rows = ranked ? ranked.map((entry) => entry.item) : baseRows;
+  const autoAll = scope === "current" && searching && ranked !== null && ranked.length === 0;
+  const all = useAllOrders(service, parsed, tolerance, source, scope === "all" || autoAll);
   const kpis: { id: DeskView; tone: Tone; value: number | null }[] = [
     { id: "todo", tone: "accent", value: data?.counts.todo ?? null },
     { id: "waiting", tone: "danger", value: data?.counts.waiting ?? null },
@@ -75,7 +138,36 @@ export function FinanceDeskScreen({ employee, service, navigate }: { employee: E
     { id: "today", tone: "success", value: data?.counts.today ?? null },
   ];
   const chooseSource = (next: string | null) => { setSource(next); setDeskSourceFilter(next); };
+  const setView = (next: DeskView) => { setViewState(next); setDeskSearchState({ view: next }); };
+  const setQuery = (next: string) => { setQueryState(next); setDeskSearchState({ query: next }); };
+  const setScope = (next: "current" | "all") => { setScopeState(next); setDeskSearchState({ scope: next }); };
+  const setTolerance = (next: number) => { setToleranceState(next); setDeskSearchState({ tolerance: next }); };
+  const setAsAmount = (next: boolean) => { setAsAmountState(next); setDeskSearchState({ asAmount: next }); };
+  // Opening a result keeps the scroll position for the way back.
+  const go = (path: string) => { setDeskSearchState({ scrollY: window.scrollY }); navigate(path); };
+  const restore = useRef(saved.scrollY);
+  useEffect(() => {
+    if (!data || restore.current <= 0) return;
+    const y = restore.current;
+    restore.current = 0;
+    setDeskSearchState({ scrollY: 0 });
+    window.requestAnimationFrame(() => window.scrollTo(0, y));
+  }, [data]);
   const label = view === "done" ? "fd.done.all" : `fd.kpi.${view}`;
+  const amountSearch = parsed.amounts.length > 0;
+  const showAll = scope === "all" || autoAll;
+  // Enter opens a result only for an exact order, payment reference or proforma with one result (never one of many).
+  const onEnter = () => {
+    if (!exactQuery(parsed)) return;
+    const local = scope === "current" ? (ranked ?? []).filter((entry) => entry.exact) : [];
+    if (local.length === 1 && local[0]) return go(rowTarget(local[0].item));
+    const remote = showAll ? (all.ranked ?? []).filter((entry) => entry.exact) : [];
+    const task = remote.length === 1 ? remote[0]?.item.task : null;
+    if (task && task.mine && task.open) return go(financeTaskPath(task.id));
+    if (scope === "current" && local.length === 0) setScope("all");
+  };
+  // The closed tasks beyond the inbox are searched by an order or proforma number only (the history endpoint).
+  const historyQuery = parsed.orders[0] ?? parsed.references[0]?.order ?? parsed.proformas[0]?.number ?? "";
 
   return (
     <article className="screen-stack fd-desk" data-testid="fr-inbox">
@@ -90,20 +182,23 @@ export function FinanceDeskScreen({ employee, service, navigate }: { employee: E
       </div>
       <div className="fd-tools">
         <label className="fd-search"><AppIcon name="search" size={18} /><span className="visually-hidden">{t("fd.search")}</span>
-          <input type="search" inputMode="search" autoComplete="off" placeholder={t("fd.search.placeholder")} value={query} onChange={(event) => setQuery(event.target.value)} data-testid="fd-search" /></label>
+          <input type="search" inputMode="search" autoComplete="off" spellCheck={false} maxLength={SEARCH_MAX_LENGTH} placeholder={t("fd.search.placeholder")} value={query}
+            onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onEnter(); } }} data-testid="fd-search" /></label>
         <SourceFilter sources={SOURCES} value={source} onChange={chooseSource} />
       </div>
-      <OrderLookup service={service} navigate={navigate} />
+      {searching && <SearchAssist parsed={parsed} scope={scope} onScope={setScope} tolerance={tolerance} onTolerance={setTolerance} asAmount={asAmount} onAsAmount={setAsAmount} />}
       {finished && <Notice tone="success" role="status" testId="fd-done">{t("fd.next.done", { order: finished })} {t("fd.next.none")}</Notice>}
       {inbox.error && (!data || inbox.stopped) && <Notice tone="danger" role="alert">{errorText(inbox.error)}</Notice>}
       {!data && !inbox.error && <QueueSkeleton />}
-      {rows && rows.length === 0 && <p className="fd-empty" data-testid="fd-empty">{t(query.trim() ? "fd.empty.search" : `fd.empty.${view}` as MessageKey)}</p>}
-      {rows && rows.length > 0 && <DeskTable rows={rows} now={now} navigate={navigate} label={t(label as MessageKey)} />}
-      {view === "done" && data && <DeskHistory service={service} source={source} query={query} now={now} navigate={navigate} shown={rows ?? []} />}
+      {scope === "current" && rows && rows.length === 0 && !autoAll && <p className="fd-empty" data-testid="fd-empty">{t(`fd.empty.${view}` as MessageKey)}</p>}
+      {scope === "current" && rows && rows.length > 0 && <DeskTable rows={rows} ranked={ranked} diff={amountSearch} now={now} navigate={go} label={t(label as MessageKey)} />}
+      {showAll && <AllOrders state={all} autoAll={autoAll} diff={amountSearch} service={service} navigate={go} />}
+      {view === "done" && data && scope === "current" && (!searching || historyQuery !== "") && <DeskHistory service={service} source={source} query={historyQuery} now={now} navigate={go} shown={rows ?? []} />}
+      {searching && <p className="dashboard-footnote" data-testid="fd-research">{t("fd.assist.research")}</p>}
       <div className="fd-foot">
         {view !== "done" && data && <button type="button" className="button button-link" onClick={() => setView("done")} data-testid="fr-category-done">{t("fd.done.link", { n: data.counts.done })}</button>}
         {view !== "todo" && <button type="button" className="button button-link" onClick={() => setView("todo")}>{t("fd.kpi.todo")}</button>}
-        {canOverseeFinance(employee) && <button type="button" className="button button-link" onClick={() => navigate(oversightPath())} data-testid="fr-open-oversight">{t("fr.oversight.open")}</button>}
+        {canOverseeFinance(employee) && <button type="button" className="button button-link" onClick={() => go(oversightPath())} data-testid="fr-open-oversight">{t("fr.oversight.open")}</button>}
       </div>
       {data && data.items.length >= data.limit && <p className="dashboard-footnote">{t("fd.limit")}</p>}
     </article>
@@ -111,63 +206,76 @@ export function FinanceDeskScreen({ employee, service, navigate }: { employee: E
 }
 
 /**
- * Staff 2.57.0 (Operation Simplification V1): the finance employee finds ANY order of her shops by its order or proforma
- * number and checks the payment herself: with or without a task, minutes after her "NU" too. The server answers the task
- * to open (hers, a free one moved to her, or a new one assigned to her); a colleague's check in progress is never taken.
+ * Staff 2.62.0: the line under the search box, only while searching: what the query was read as (the total of a sum,
+ * the amount, a number read as an order with "search as an amount too", the payment date), the scope, and the amount
+ * tolerance only for an amount search. A research filter: it accepts, records and decides nothing.
  */
-function OrderLookup({ service, navigate }: { service: ConfirmareApi; navigate: (path: string) => void }) {
-  const { t } = useI18n();
-  const errorText = useErrorText();
-  const [query, setQuery] = useState("");
-  const [items, setItems] = useState<FinanceLookupItem[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const keys = useRef<Record<string, string>>({});
-  const search = async (event: FormEvent) => {
-    event.preventDefault();
-    if (query.trim() === "") return;
-    setError(null); setBusy("search");
-    try { setItems(await service.financeLookup(query.trim())); } catch (caught) { setItems(null); setError(errorText(caught)); } finally { setBusy(null); }
-  };
-  const check = async (item: FinanceLookupItem) => {
-    setError(null); setBusy(item.globalOrderId);
-    keys.current[item.globalOrderId] ??= createIdempotencyKey();
-    try {
-      const answer = await service.financeCheckOrder(item.globalOrderId, keys.current[item.globalOrderId]);
-      delete keys.current[item.globalOrderId];
-      navigate(financeTaskPath(answer.requestId));
-    } catch (caught) { setError(errorText(caught)); } finally { setBusy(null); }
-  };
+function SearchAssist({ parsed, scope, onScope, tolerance, onTolerance, asAmount, onAsAmount }: {
+  parsed: ParsedSearch; scope: "current" | "all"; onScope: (scope: "current" | "all") => void; tolerance: number; onTolerance: (value: number) => void; asAmount: boolean; onAsAmount: (value: boolean) => void;
+}) {
+  const { t, formatDate } = useI18n();
+  const [custom, setCustom] = useState(() => ((TOLERANCES as readonly number[]).includes(tolerance) ? "" : baniText(tolerance).replace(".", ",")));
+  const amount = parsed.amounts[0];
   return (
-    <section className="fd-lookup" aria-labelledby="fd-lookup-title" data-testid="fd-lookup">
-      <h2 id="fd-lookup-title">{t("fd.search.title")}</h2>
-      <form className="fd-lookup-form" onSubmit={(event) => { void search(event); }}>
-        <label className="fd-search"><AppIcon name="search" size={18} /><span className="visually-hidden">{t("fd.search.title")}</span>
-          <input type="search" inputMode="search" autoComplete="off" maxLength={30} placeholder={t("fd.search.placeholder")} value={query} onChange={(event) => setQuery(event.target.value)} data-testid="fd-lookup-input" /></label>
-        <button type="submit" className="button button-secondary" disabled={busy !== null || query.trim() === ""} data-testid="fd-lookup-search">{t("common.search")}</button>
-      </form>
-      {error && <Notice tone="danger" role="alert">{error}</Notice>}
-      {items && items.length === 0 && <p className="fd-empty">{t("fd.search.none")}</p>}
-      {items && items.length > 0 && <ul className="fd-lookup-list">{items.map((item) => (
-        <li key={item.globalOrderId} data-testid={`fd-lookup-${item.orderNumber}`}>
-          <strong className="mono">#{item.orderNumber}</strong> <span className="cf-source">{sourceLabel(item.sourceKey)}</span>
-          {item.proforma && <span className="mono"> · {proformaLabel(item.proforma)}</span>}
-          {item.task && <small> · {item.task.mine ? stateLabel(item.task.state as never) : t("fd.search.taskOf", { name: item.task.assignee ?? "—" })}</small>}
-          <button type="button" className="button fd-yes" disabled={busy !== null || !item.cod} onClick={() => { void check(item); }} data-testid={`fd-lookup-check-${item.orderNumber}`}>{t("fd.search.check")}</button>
-        </li>
-      ))}</ul>}
-    </section>
+    <div className="fd-assist" data-testid="fd-assist">
+      <div className="fd-scope" role="group" aria-label={t("fd.scope")} data-testid="fd-scope">
+        {(["current", "all"] as const).map((value) => <button key={value} type="button" className="fd-chip" aria-pressed={scope === value} onClick={() => onScope(value)} data-testid={`fd-scope-${value}`}>{t(`fd.scope.${value}` as MessageKey)}</button>)}
+      </div>
+      {parsed.sum && <strong className="fd-assist-total" data-testid="fd-sum">{t("fd.assist.total", { amount: formatFinanceMoney(baniText(parsed.sum.total), "RON") })}</strong>}
+      {!parsed.sum && amount !== undefined && <span className="fd-assist-total" data-testid="fd-amount">{t("fd.assist.amount", { amount: formatFinanceMoney(baniText(amount), "RON") })}</span>}
+      {parsed.date && <span data-testid="fd-date">{t("fd.assist.date", { date: formatDate(`${parsed.date}T12:00:00Z`, { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Bucharest" }) })}</span>}
+      {parsed.ambiguous.length > 0 && <span className="fd-assist-order">{t("fd.assist.order", { n: parsed.ambiguous.join(", ") })}
+        <button type="button" className="fd-chip" aria-pressed={asAmount} onClick={() => onAsAmount(!asAmount)} data-testid="fd-as-amount">{t("fd.assist.asAmount")}</button></span>}
+      {parsed.amounts.length > 0 && <div className="fd-tol" role="group" aria-label={t("fd.tol")} data-testid="fd-tolerance">
+        {TOLERANCES.map((value) => <button key={value} type="button" className="fd-chip" aria-pressed={tolerance === value && custom === ""} onClick={() => { setCustom(""); onTolerance(value); }} data-testid={`fd-tol-${value}`}>
+          {value === 0 ? t("fd.tol.exact") : t("fd.tol.value", { n: value / 100 })}</button>)}
+        <label className={`fd-chip fd-tol-custom${custom !== "" ? " is-on" : ""}`}><span>{t("fd.tol.custom")}</span>
+          <input inputMode="decimal" autoComplete="off" maxLength={7} placeholder={t("fd.tol.customHint")} value={custom} data-testid="fd-tol-custom"
+            onChange={(event) => { const text = event.target.value; setCustom(text); const value = parseBani(text); if (value !== null) onTolerance(Math.min(MAX_TOLERANCE, value)); else if (text === "") onTolerance(DEFAULT_TOLERANCE); }} /></label>
+      </div>}
+    </div>
   );
 }
 
-function DeskTable({ rows, now, navigate, label, testId = "fd-table" }: { rows: InboxItem[]; now: number; navigate: (path: string) => void; label: string; testId?: string }) {
+/**
+ * The reasons under the customer's name, from the ranking (the research priority's explanation, at most two lines). A
+ * payment already recorded comes first and alone in red (a second one would be a duplicate). The amount's difference is
+ * in its own column; the line says only whether the amount is exact or near, and which amount ("total comandă").
+ */
+function Reasons({ entry, testId }: { entry: Ranked<unknown>; testId: string }) {
+  const text = useReasonText();
   const { t } = useI18n();
+  const amountOnly = entry.reasons.some((reason) => reason.code === "amountOnly");
+  const shown = entry.reasons.filter((reason) => reason.code !== "recorded" && !(amountOnly && (reason.code === "amountExact" || reason.code === "amountNear")));
+  return <small className="fd-why" data-testid={testId}>
+    {entry.recorded && <strong className="fd-recorded">{t("fd.why.recorded")}{shown.length > 0 ? " · " : ""}</strong>}
+    {shown.map((reason) => text(reason)).join(" · ")}</small>;
+}
+
+function DiffCell({ entry, currency, testId }: { entry: Ranked<unknown> | null; currency: string; testId: string }) {
+  const { t } = useI18n();
+  const amount = entry?.amount ?? null;
+  return <span role="cell" className="fd-c-diff" data-testid={testId}>{amount ? <><strong>{formatFinanceMoney(baniText(amount.diff), currency)}</strong>
+    {amount.kind !== "advance" && <small>{t(`fd.kind.${amount.kind}` as MessageKey)} {formatFinanceMoney(baniText(amount.value), currency)}</small>}</> : "—"}</span>;
+}
+
+const COLUMNS = ["order", "shop", "ordered", "age", "proforma", "advance", "action"] as const;
+const COLUMNS_DIFF = ["order", "shop", "ordered", "age", "proforma", "advance", "diff", "action"] as const;
+/** "Toate comenzile" has no waiting time (an order may have no task): the same table without that column. */
+const COLUMNS_ALL = ["order", "shop", "ordered", "proforma", "advance", "action"] as const;
+const COLUMNS_ALL_DIFF = ["order", "shop", "ordered", "proforma", "advance", "diff", "action"] as const;
+
+function DeskTable({ rows, ranked = null, diff = false, now, navigate, label, testId = "fd-table" }: {
+  rows: InboxItem[]; ranked?: Ranked<InboxItem>[] | null; diff?: boolean; now: number; navigate: (path: string) => void; label: string; testId?: string;
+}) {
+  const { t } = useI18n();
+  const byId = new Map((ranked ?? []).map((entry) => [entry.item.id, entry]));
   return (
-    <div className="fd-table" role="table" aria-label={label} data-testid={testId}>
+    <div className={`fd-table${diff ? " has-diff" : ""}`} role="table" aria-label={label} data-testid={testId}>
       <div className="fd-row fd-row-head" role="row">
-        {(["order", "shop", "ordered", "age", "proforma", "advance", "state", "action"] as const).map((column) => <span key={column} role="columnheader" className={`fd-c-${column}`}>{t(`fd.col.${column}` as MessageKey)}</span>)}
+        {(diff ? COLUMNS_DIFF : COLUMNS).map((column) => <span key={column} role="columnheader" className={`fd-c-${column}`}>{t(`fd.col.${column}` as MessageKey)}</span>)}
       </div>
-      {rows.map((item) => <DeskRow key={item.id} item={item} now={now} navigate={navigate} />)}
+      {rows.map((item) => <DeskRow key={item.id} item={item} entry={byId.get(item.id) ?? null} diff={diff} now={now} navigate={navigate} />)}
     </div>
   );
 }
@@ -208,34 +316,114 @@ function DeskHistory({ service, source, query, now, navigate, shown }: { service
   );
 }
 
-function DeskRow({ item, now, navigate }: { item: InboxItem; now: number; navigate: (path: string) => void }) {
+/**
+ * Staff 2.62.0: a task's state is no column any more (owner 2026-11-27: it took room and helped nobody find a customer);
+ * only what needs attention stays, as a small note under the name: an exceptional or second-check task, the manual
+ * ledger, and the outcome of a closed task.
+ */
+function rowNote(item: InboxItem, t: (key: MessageKey) => string): string | null {
+  if (item.kind === "exception") return taskCodeLabel(item.taskCode) || t("fr.kind.exception" as MessageKey);
+  if (item.kind !== "verify" && item.category !== "done") return t(`fr.kind.${item.kind}` as MessageKey);
+  if (item.awaitingPayment) return null;
+  if (item.category === "done") return stateLabel(item.state);
+  return null;
+}
+
+function DeskRow({ item, entry, diff, now, navigate }: { item: InboxItem; entry: Ranked<InboxItem> | null; diff: boolean; now: number; navigate: (path: string) => void }) {
   const { t, formatDate } = useI18n();
   const wait = waitParts(item.requestedAt, now);
   const age = wait.unit === "days" ? t("fd.age.days", { d: wait.d, h: wait.h }) : t(`fd.age.${wait.unit}` as MessageKey, { n: wait.n });
   const advance = item.advance;
+  const currency = advance?.currency ?? "RON";
   const rest = advance && advance.remaining !== null && advance.required !== null && advance.remaining !== advance.required ? advance.remaining : null;
-  const state = item.awaitingPayment ? t("fd.state.waiting")
-    : item.kind === "exception" ? taskCodeLabel(item.taskCode) || t("fr.kind.exception" as MessageKey)
-      : item.kind !== "verify" && item.category !== "done" ? t(`fr.kind.${item.kind}` as MessageKey) : stateLabel(item.state);
-  const tone: Tone = item.awaitingPayment || item.state === "not_received" ? "danger" : item.state === "needs_clarification" ? "warning" : item.state === "verified" ? "success" : item.category === "done" ? "neutral" : "accent";
+  const note = rowNote(item, t);
+  const client = clientLabel(item.customer);
   const check = deskable(item);
   return (
     // Staff 2.55.0: the whole row opens the task (the button stays for the keyboard and screen readers).
     <div className="fd-row is-clickable" role="row" tabIndex={-1} data-testid={`fr-card-${item.orderNumber}`}
       onClick={(event) => { if (!(event.target as HTMLElement).closest("button")) navigate(rowTarget(item)); }}
       onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) navigate(rowTarget(item)); }}>
-      <span role="cell" className="fd-c-order"><strong className="mono">#{item.orderNumber}</strong></span>
+      <span role="cell" className="fd-c-order">
+        <span className="fd-order-line"><strong className="mono">#{item.orderNumber}</strong>{client && <><span className="fd-dash" aria-hidden="true">—</span><span className="fd-client" title={client} data-testid={`fd-client-${item.orderNumber}`}>{client}</span></>}</span>
+        {entry && <Reasons entry={entry} testId={`fd-why-${item.orderNumber}`} />}
+        {!entry && (note || item.ledger === "manual") && <small className="fd-why" data-testid={`fr-card-state-${item.orderNumber}`}>{[note, item.ledger === "manual" ? t("fr.ledger.manual") : null].filter(Boolean).join(" · ")}</small>}
+      </span>
       <span role="cell" className="fd-c-shop">{sourceLabel(item.source)}</span>
       <span role="cell" className="fd-c-ordered">{item.orderedAt ? formatDate(item.orderedAt, { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Bucharest" }) : "—"}</span>
       <span role="cell" className={`fd-c-age${wait.unit === "days" && wait.d >= 2 && item.category !== "done" ? " is-late" : ""}`}>{age}</span>
       <span role="cell" className="fd-c-proforma mono">{proformaLabel(item.proforma)}</span>
       <span role="cell" className="fd-c-advance" data-testid={`fd-advance-${item.orderNumber}`}>{advance ? <><strong>{formatFinanceMoney(advance.required, advance.currency)}</strong>{rest && <small>{t("fd.advance.rest", { amount: formatFinanceMoney(rest, advance.currency) })}</small>}</> : "—"}</span>
-      <span role="cell" className="fd-c-state"><StatusPill tone={tone} testId={`fr-card-state-${item.orderNumber}`}>{state}</StatusPill>
-        {item.ledger === "manual" && <small className="fd-tag" data-testid={`fr-card-manual-${item.orderNumber}`}>{t("fr.ledger.manual")}</small>}</span>
+      {diff && <DiffCell entry={entry} currency={currency} testId={`fd-diff-${item.orderNumber}`} />}
       <span role="cell" className="fd-c-action">
         <button type="button" className={`button ${check ? "button-primary" : "button-secondary"} fd-row-check`} onClick={() => navigate(rowTarget(item))} data-testid={`fr-open-${item.orderNumber}`}>{t(check ? "fd.row.check" : "fd.row.open")}<AppIcon name="arrow" size={16} /></button>
       </span>
     </div>
+  );
+}
+
+/**
+ * Staff 2.62.0: "Toate comenzile", in the same table. "Verifică" is the payment check of Staff 2.57.0 unchanged
+ * (POST /confirmare/finance/check on her click: her open task, a free one moved to her, or a new one; a colleague's
+ * check in progress is never taken). A closed verified task of hers opens read-only. The search itself changes nothing.
+ */
+function AllOrders({ state, autoAll, diff, service, navigate }: { state: ReturnType<typeof useAllOrders>; autoAll: boolean; diff: boolean; service: ConfirmareApi; navigate: (path: string) => void }) {
+  const { t, formatDate } = useI18n();
+  const errorText = useErrorText();
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const keys = useRef<Record<string, string>>({});
+  const check = async (item: FinanceSearchItem) => {
+    setError(null); setBusy(item.globalOrderId);
+    keys.current[item.globalOrderId] ??= createIdempotencyKey();
+    try {
+      const answer = await service.financeCheckOrder(item.globalOrderId, keys.current[item.globalOrderId]);
+      delete keys.current[item.globalOrderId];
+      navigate(financeTaskPath(answer.requestId));
+    } catch (caught) { setError(errorText(caught)); } finally { setBusy(null); }
+  };
+  const ranked = state.ranked;
+  return (
+    <section className="fd-lookup" aria-labelledby="fd-lookup-title" aria-busy={state.busy} data-testid="fd-lookup">
+      <h2 id="fd-lookup-title">{t(autoAll ? "fd.all.auto" : "fd.all.title")}</h2>
+      {!state.ready && <p className="fd-empty">{t("fd.all.short")}</p>}
+      {state.busy && <p className="fd-muted" role="status">{t("fd.all.searching")}</p>}
+      {state.error !== null && <Notice tone="danger" role="alert">{errorText(state.error)}</Notice>}
+      {error && <Notice tone="danger" role="alert">{error}</Notice>}
+      {ranked && ranked.length === 0 && <p className="fd-empty" data-testid="fd-lookup-none">{t("fd.all.none")}</p>}
+      {ranked && ranked.length > 0 && <div className={`fd-table fd-table-all${diff ? " has-diff" : ""}`} role="table" aria-label={t("fd.all.title")}>
+        <div className="fd-row fd-row-head" role="row">
+          {(diff ? COLUMNS_ALL_DIFF : COLUMNS_ALL).map((column) => <span key={column} role="columnheader" className={`fd-c-${column}`}>{t(`fd.col.${column}` as MessageKey)}</span>)}
+        </div>
+        {ranked.map((entry) => {
+          const item = entry.item;
+          const currency = item.money?.currency ?? "RON";
+          const client = clientLabel(item.customer);
+          const task = item.task;
+          const doneMine = task !== null && !task.open && task.mine && task.state === "verified";
+          return (
+            <div key={item.globalOrderId} className="fd-row" role="row" data-testid={`fd-lookup-${item.orderNumber}`}>
+              <span role="cell" className="fd-c-order">
+                <span className="fd-order-line"><strong className="mono">#{item.orderNumber}</strong>{client && <><span className="fd-dash" aria-hidden="true">—</span><span className="fd-client" title={client}>{client}</span></>}</span>
+                <Reasons entry={entry} testId={`fd-lookup-why-${item.orderNumber}`} />
+                {task && <small className="fd-why fd-task-state" data-testid={`fd-lookup-task-${item.orderNumber}`}>{stateLabel(task.state as never)}{!task.mine && task.open ? ` · ${t("fd.search.taskOf", { name: task.assignee ?? "—" })}` : ""}</small>}
+              </span>
+              <span role="cell" className="fd-c-shop">{sourceLabel(item.sourceKey)}</span>
+              <span role="cell" className="fd-c-ordered">{item.orderedAt ? formatDate(item.orderedAt, { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Bucharest" }) : "—"}</span>
+              <span role="cell" className="fd-c-proforma mono">{proformaLabel(item.proforma)}</span>
+              <span role="cell" className="fd-c-advance">{item.money?.advance ? <strong>{formatFinanceMoney(item.money.advance, currency)}</strong> : "—"}</span>
+              {diff && <DiffCell entry={entry} currency={currency} testId={`fd-lookup-diff-${item.orderNumber}`} />}
+              <span role="cell" className="fd-c-action">
+                {doneMine
+                  ? <button type="button" className="button button-secondary fd-row-check" onClick={() => navigate(financeTaskDonePath(task.id))} data-testid={`fd-lookup-open-${item.orderNumber}`}>{t("fd.all.open")}<AppIcon name="arrow" size={16} /></button>
+                  : <button type="button" className="button button-primary fd-row-check" disabled={busy !== null || !item.cod} onClick={() => { void check(item); }} data-testid={`fd-lookup-check-${item.orderNumber}`}>{t("fd.row.check")}<AppIcon name="arrow" size={16} /></button>}
+              </span>
+            </div>
+          );
+        })}
+      </div>}
+      {state.truncated && <p className="dashboard-footnote" data-testid="fd-lookup-more">{t("fd.all.more")}</p>}
+    </section>
   );
 }
 
@@ -349,6 +537,9 @@ export function FinanceCheckScreen({ requestId, service, navigate }: { requestId
   const tone = step.kind === "no" || step.kind === "no-summary" ? (step.kind === "no-summary" && step.outcome === "needs_clarification" ? "warning" : "danger") : "success";
   const blocked = Boolean(live?.proformaChanged);
   const waiting = busy || starting;
+  const client = clientLabel(request.customer);
+  const proformaText = live?.proforma ? proformaLabel({ series: live.proforma.series || null, number: live.proforma.number }) : proformaLabel(request.proforma);
+  const advanceDue = remaining ?? live?.advance?.required ?? null;
 
   // A lost answer, or a decision the shop has not confirmed yet: settle it with the stored key, never a new payment.
   if (entry === "reconcile" || lost) {
@@ -381,13 +572,15 @@ export function FinanceCheckScreen({ requestId, service, navigate }: { requestId
       <CheckHead task={task} navigate={navigate} step={number} />
       {done && <Notice tone="success" role="status" testId="fd-done">{t("fd.next.done", { order: done })}</Notice>}
       <dl className="fd-facts" data-testid="fr-task-money">
-        <div><dt>{t("fd.fact.order")}</dt><dd className="mono">#{request.orderNumber}</dd></div>
+        {/* Staff 2.62.0: the customer's name first, with small copy buttons for the bank screen on another computer. */}
+        <div className="fd-full fd-client-fact"><dt>{t("fd.fact.client")}</dt><dd data-testid="fd-task-client">{client ?? "—"}{client && <CopyButton value={client} what={t("fd.fact.client")} testId="fd-copy-client" />}</dd></div>
+        <div><dt>{t("fd.fact.order")}</dt><dd className="mono">#{request.orderNumber}<CopyButton value={request.orderNumber} what={t("fd.fact.order")} testId="fd-copy-order" /></dd></div>
         <div><dt>{t("fd.fact.channel")}</dt><dd>{sourceLabel(request.source)}</dd></div>
-        <div><dt>{t("fd.fact.proforma")}</dt><dd className="mono">{live?.proforma ? proformaLabel({ series: live.proforma.series || null, number: live.proforma.number }) : proformaLabel(request.proforma)}</dd></div>
-        <div><dt>{t("fd.fact.reference")}</dt><dd className="mono" data-testid="fr-payment-reference"><strong>{reference ?? "—"}</strong></dd></div>
+        <div><dt>{t("fd.fact.proforma")}</dt><dd className="mono">{proformaText}{proformaText !== "—" && <CopyButton value={proformaText} what={t("fd.fact.proforma")} testId="fd-copy-proforma" />}</dd></div>
+        <div><dt>{t("fd.fact.reference")}</dt><dd className="mono" data-testid="fr-payment-reference"><strong>{reference ?? "—"}</strong>{reference && <CopyButton value={reference} what={t("fd.fact.reference")} testId="fd-copy-reference" />}</dd></div>
         <div className="fd-wide"><dt>{t("fd.fact.bank")}</dt><dd>{live?.bank ? <>{live.bank.bank} · <span className="mono">{maskIban(live.bank.ibanMasked)}</span></> : "—"}</dd></div>
         <div className="fd-full"><dt>{t("fd.fact.total")}</dt><dd data-testid="fd-total">{formatFinanceMoney(money.total, currency)}</dd></div>
-        <div className="fd-amount"><dt>{t("fd.fact.advance")}</dt><dd data-testid="fr-remaining">{formatFinanceMoney(remaining ?? live?.advance?.required ?? null, currency)}</dd></div>
+        <div className="fd-amount"><dt>{t("fd.fact.advance")}</dt><dd data-testid="fr-remaining">{formatFinanceMoney(advanceDue, currency)}{advanceDue !== null && <CopyButton value={advanceDue.replace(".", ",")} what={t("fd.fact.advance")} testId="fd-copy-advance" />}</dd></div>
       </dl>
       {live?.advance && bani(live.advance.verified ?? "0") > 0 && <p className="fd-already" data-testid="fd-already">{t("fd.fact.already", { amount: formatFinanceMoney(live.advance.verified, currency), remaining: formatFinanceMoney(remaining, currency) })}</p>}
       {!live && <Notice tone="warning" role="note" testId="fr-live-unavailable">{t("fd.unavailable")}</Notice>}
@@ -434,6 +627,18 @@ export function FinanceCheckScreen({ requestId, service, navigate }: { requestId
       </section>}
     </article>
   );
+}
+
+/** Staff 2.62.0: a small copy button (the name, the order, the proforma, the reference, the advance). Copies, nothing else. */
+function CopyButton({ value, what, testId }: { value: string; what: string; testId: string }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    const done = () => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); };
+    try { void navigator.clipboard?.writeText(value).then(done, () => undefined); } catch { /* no clipboard: nothing to do */ }
+  };
+  return <button type="button" className="fd-copy" onClick={copy} aria-label={t("fd.copy", { what })} title={copied ? t("fd.copied") : t("fd.copy", { what })} data-testid={testId}>
+    <AppIcon name={copied ? "check" : "copy"} size={14} /></button>;
 }
 
 function CheckHead({ task, navigate, step }: { task: FinanceTask; navigate: (path: string) => void; step: number }) {
@@ -613,7 +818,8 @@ export function FinanceDoneScreen({ requestId, service, navigate }: { requestId:
     <article className="screen-stack fd-check fd-done-task" data-testid="fd-done-task" data-state={request.state}>
       <button className="back-link" type="button" onClick={() => navigate("/confirmare/finance/requests")}><AppIcon name="back" size={20} /> {t("fd.back")}</button>
       <header className="fd-done-head">
-        <div><p className="eyebrow">{sourceLabel(request.source)}</p><h1 className="mono">#{request.orderNumber}</h1></div>
+        <div><p className="eyebrow">{sourceLabel(request.source)}</p><h1 className="mono">#{request.orderNumber}</h1>
+          {clientLabel(request.customer) && <p className="fd-done-client" data-testid="fd-done-client">{clientLabel(request.customer)}</p>}</div>
         <StatusPill tone={tone} testId="fd-done-state">{request.awaitingPayment ? t("fd.state.waiting") : stateLabel(request.state)}</StatusPill>
       </header>
       {saved && <Notice tone="success" role="status" testId="fd-done-saved">{saved}</Notice>}

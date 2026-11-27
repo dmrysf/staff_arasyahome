@@ -188,8 +188,9 @@ test("permissions stay as they were: Cristina's scopes open the desk; view-only,
   // Staff 2.55.0: the finance task calls, plus the history and the two follow-up payments (no second approval, no refund).
   const source = readFileSync(path.join(root, "features/confirmare/FinanceDesk.tsx"), "utf8");
   const calls = [...new Set([...source.matchAll(/service\.([a-zA-Z]+)\(/g)].map((match) => match[1]))].sort();
-  // Staff 2.57.0: plus her own search of any order and her own payment check (financeLookup, financeCheckOrder).
-  assert.deepEqual(calls, ["addPayment", "correctPayment", "decideTask", "financeCheckOrder", "financeHistory", "financeInbox", "financeLookup", "financeTask", "reconcileTask", "startTask"]);
+  // Staff 2.57.0: plus her own search of any order and her own payment check (financeCheckOrder); Staff 2.62.0: the
+  // search of any order is the read-only candidate search (financeSearch), the order-number lookup is no longer called.
+  assert.deepEqual(calls, ["addPayment", "correctPayment", "decideTask", "financeCheckOrder", "financeHistory", "financeInbox", "financeSearch", "financeTask", "reconcileTask", "startTask"]);
   assert.ok(canAccessRoute(cristina, `/confirmare/finance/requests/${id(1)}/done`));
   assert.deepEqual(parseStaffRoute(`/confirmare/finance/requests/${id(1)}/done`), { kind: "finance-task-done", pathname: `/confirmare/finance/requests/${id(1)}/done`, requestId: id(1) });
 });
@@ -300,4 +301,29 @@ test("Staff 2.56.0: a finance command waits up to 30 s for the API (the shop may
   assert.match(requests, /export const FINANCE_COMMAND_TIMEOUT_MS = 30_000;/);
   assert.match(requests, /timeoutMs: FINANCE_COMMAND_TIMEOUT_MS/);
   assert.match(http, /AbortSignal\.timeout\(timeoutMs \?\? 12_000\)/);
+});
+
+test("Staff 2.62.0 (Finance Smart Search V1): one search box, the customer next to the order, no status column", () => {
+  const box = inbox([item(1, { customer: { name: "Maria Popescu", company: null }, money: { total: "1000.00", verified: "0.00", received: "0.00", cod: "1000.00" } }), item(2)]);
+  assert.deepEqual(box.items[0].customer, { name: "Maria Popescu", company: null });
+  assert.equal(box.items[0].money?.total, "1000.00");
+  assert.equal(box.items[1].customer, null, "an older API without names: no name is invented");
+  assert.equal(box.items[1].money, null);
+  assert.equal(CATALOGS.ro["fd.search.placeholder"], "Caută după nume, sumă, comandă sau proformă...");
+  assert.equal(CATALOGS.ro["fd.col.order"], "Comandă / Client");
+  const source = readFileSync(path.join(root, "features/confirmare/FinanceDesk.tsx"), "utf8");
+  const columns = source.slice(source.indexOf("const COLUMNS ="), source.indexOf("function DeskTable("));
+  assert.doesNotMatch(columns, /"state"/, "the status column is gone from the daily table");
+  assert.match(columns, /"order", "shop", "ordered", "age", "proforma", "advance", "action"/);
+  const desk = source.slice(source.indexOf("export function FinanceDeskScreen"), source.indexOf("// ---- The three-step check"));
+  assert.equal((desk.match(/data-testid="fd-search"/g) ?? []).length, 1, "one search box");
+  assert.doesNotMatch(desk, /fd-lookup-input|financeLookup\(/, "the separate order lookup box is merged into the search");
+  // The search is research only: no command is sent while searching; "Verifică" is the existing check on a click.
+  const search = source.slice(source.indexOf("function useAllOrders"), source.indexOf("export function FinanceDeskScreen"));
+  assert.doesNotMatch(search, /decideTask|startTask|addPayment|correctPayment|financeCheckOrder|reconcileTask/);
+  assert.match(search, /setTimeout\([\s\S]*?, 300\)/, "a 300 ms debounce");
+  assert.match(search, /controller\.abort\(\)/, "an older request is aborted");
+  assert.match(search, /answer\?\.key === key/, "an answer is shown only for the query it was asked for");
+  const http = readFileSync(path.join(root, "domain/financeRequests.ts"), "utf8");
+  assert.match(http, /financeSearch: \(criteria, signal\) => http\.request\("\/confirmare\/finance\/search", \{ method: "POST"/, "the name words go in a request body, never in a URL");
 });

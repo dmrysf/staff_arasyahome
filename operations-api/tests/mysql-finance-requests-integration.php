@@ -56,12 +56,16 @@ $error = static function (array $r, int $status, string $code, string $label) us
 final class FinanceRequestShops implements SourceAccessTransport
 {
     /** @param array<string, SourceAccessFakeShop> $shops */
+    /** API 2.85.0: every shop call, so a test proves a read made none. */
+    public int $posts = 0;
+
     public function __construct(private array $shops)
     {
     }
 
     public function post(string $baseUrl, string $path, array $headers, string $body): array
     {
+        $this->posts++;
         return $this->shops[$baseUrl]->post($baseUrl, $path, $headers, $body);
     }
 }
@@ -234,9 +238,13 @@ $reference = static fn (string $orderId): string => 'TH' . $orderId;
 $evidence = static fn (array $t, string $amount, string $bankReference, array $over = []): array => $over + ['expectedVersion' => $t['request']['version'], 'outcome' => 'verified', 'expectedRevision' => $t['live']['revision'],
     'amount' => $amount, 'reference' => $bankReference, 'valueDate' => gmdate('Y-m-d'), 'paymentReference' => (string) $t['live']['paymentReference'], 'currency' => 'RON'];
 $requestRow = static fn (string $requestId): array => $all('SELECT * FROM finance_verification_requests WHERE request_uuid = ?', [$requestId])[0] ?? [];
-$noOrderData = static function (array $body, string $label) use ($check): void {
+// API 2.85.0 (Finance Smart Search V1, owner 2026-11-27): the finance employee's own task lists and task screen show the
+// customer's name (and company) so she can find the order a transfer belongs to. Never the address, the telephone, the
+// products or the measurements; the oversight and the money panels keep no customer data at all.
+$noOrderData = static function (array $body, string $label, bool $nameShown = false) use ($check): void {
     $json = json_encode($body, JSON_UNESCAPED_UNICODE);
-    foreach ([FVR_NAME, FVR_STREET, FVR_PHONE, '711666', 'Draperie', 'DV-302', 'Velvet', 'Cluj', '"width"', '"height"', '"lines"', '"customer"', '"contacts"', '"addressLines"'] as $needle) {
+    $needles = [FVR_STREET, FVR_PHONE, '711666', 'Draperie', 'DV-302', 'Velvet', 'Cluj', '"width"', '"height"', '"lines"', '"contacts"', '"addressLines"'];
+    foreach ($nameShown ? $needles : [FVR_NAME, '"customer"', ...$needles] as $needle) {
         $check(!str_contains((string) $json, $needle), "{$label}: no customer, product or measurement data ({$needle})");
     }
 };
@@ -297,10 +305,10 @@ $ids = array_column($box['items'], 'id');
 $mine = 14 + ($a50['request']['assignee'] === 'Test fin' ? 1 : 0);
 $check(in_array($r1, $ids, true) && count($ids) === $mine && $box['counts']['todo'] === $mine && !array_key_exists('legacySecondChecks', $box) && (int) $one('SELECT COUNT(*) FROM finance_verification_requests WHERE assigned_employee_uuid = ?', [$uuids['fin']]) === $mine,
     'the inbox: exactly the requests assigned to this employee');
-$noOrderData($box, 'inbox');
+$noOrderData($box, 'inbox', true);
 $item = array_column($box['items'], null, 'id')[$r1];
-$check(array_keys($item) === ['id', 'source', 'orderNumber', 'purpose', 'taskCode', 'ledger', 'proforma', 'state', 'version', 'category', 'kind', 'assignedToMe', 'outcome', 'reasonCode', 'policy', 'requestedAt', 'updatedAt', 'decidedAt', 'decidedByMe', 'recheckAt', 'advance', 'awaitingPayment', 'orderedAt']
-    && $item['kind'] === 'verify' && $item['purpose'] === 'advance' && $item['ledger'] === 'shop' && $item['advance'] === null && $item['awaitingPayment'] === false && is_string($item['orderedAt']),
+$check(array_keys($item) === ['id', 'source', 'orderNumber', 'purpose', 'taskCode', 'ledger', 'proforma', 'state', 'version', 'category', 'kind', 'assignedToMe', 'outcome', 'reasonCode', 'policy', 'requestedAt', 'updatedAt', 'decidedAt', 'decidedByMe', 'recheckAt', 'advance', 'awaitingPayment', 'orderedAt', 'customer', 'money']
+    && $item['customer'] === ['name' => FVR_NAME, 'company' => null] && $item['money'] === null && $item['kind'] === 'verify' && $item['purpose'] === 'advance' && $item['ledger'] === 'shop' && $item['advance'] === null && $item['awaitingPayment'] === false && is_string($item['orderedAt']),
     'an inbox card: source, order number, proforma, state, one action; no advance amount before the shop was read (no payment reference)');
 $check($box['counts']['waiting'] === 0 && $box['counts']['today'] === 0, 'API 2.77.9: the waiting and today counts start at zero');
 $fake = '00000000-0000-4000-8000-00000000beef';
@@ -311,7 +319,7 @@ $error($inbox($who['fnone']), 403, 'CONFIRMARE_FINANCE_DENIED', 'no scope, no in
 $error($task($who['fsup'], $r1), 404, 'FINANCE_REQUEST_NOT_FOUND', 'the supervisor cannot open the employee\'s task as a task');
 $error($task($who['rop'], $r1), 404, 'FINANCE_REQUEST_NOT_FOUND', 'the operator cannot open the finance task');
 $t1 = $ok($task($f, $r1), 'task');
-$noOrderData($t1, 'task');
+$noOrderData($t1, 'task', true);
 $check($t1['live']['available'] === true && $t1['live']['proforma']['number'] === '0001' && $t1['live']['advance'] === ['percentage' => 30, 'required' => '300.00', 'verified' => '0.00', 'remaining' => '300.00', 'accepted' => false]
     && $t1['live']['bank'] === ['beneficiary' => 'TEST Trend Home SRL', 'bank' => 'Banca TEST', 'ibanMasked' => 'RO49 •••• •••• 0000', 'bic' => null] && $t1['live']['policy'] === 'four_eyes' && $t1['live']['transfers'] === [] && $t1['live']['proformaChanged'] === false,
     'the task: proforma, advance (required, verified, remaining), the bank account the proforma names (IBAN masked), the policy, the bank transfers, read from the shop now');
@@ -387,7 +395,7 @@ $check($opView['request']['state'] === 'checking' && $opView['request']['awaitin
 $error($cmd($f, $r1, 'second-check', ['expectedVersion' => $requestRow($r1)['version'], 'expectedRevision' => $t1['live']['revision'], 'decision' => 'verify']), 403, 'CONFIRMARE_FINANCE_SAME_EMPLOYEE', 'the recorder never verifies their own record');
 $zbox = $ok($inbox($who['fsup']), 'second checker inbox');
 $check(array_column($zbox['items'], 'kind', 'id')[$r1] === 'second_check' && count($zbox['items']) === 1, 'the employee with approve sees exactly the second check waiting for them');
-$noOrderData($zbox, 'second checker inbox');
+$noOrderData($zbox, 'second checker inbox', true);
 $tz = $ok($task($who['fsup'], $r1), 'second check task');
 $check($tz['allowed']['secondCheck'] === true && $tz['allowed']['verify'] === false && count($tz['live']['transfers']) === 1 && $tz['live']['transfers'][0]['submittedBy']['displayName'] === 'Test fin', 'the second check sees the recorded transfer and who recorded it');
 $z1 = $ok($cmd($who['fsup'], $r1, 'second-check', ['expectedVersion' => $requestRow($r1)['version'], 'expectedRevision' => $tz['live']['revision'], 'decision' => 'verify']), 'second check');
@@ -679,7 +687,7 @@ $box64 = $ok($inbox($f), 'inbox with legacy tasks');
 $item64 = array_column($box64['items'], null, 'id')[$r64] ?? null;
 $check($item64 !== null && $item64['ledger'] === 'manual' && $item64['orderNumber'] === $id(64) && count(array_filter($box64['items'], static fn (array $i): bool => in_array($i['orderNumber'], [$id(62), $id(63), $id(65), $id(66), $id(67), $id(68)], true))) === 0,
     'the inbox shows the assigned legacy task, never the uncovered or task-less orders');
-$noOrderData($box64, 'inbox with legacy tasks');
+$noOrderData($box64, 'inbox with legacy tasks', true);
 foreach ([62, 63, 65, 66, 67] as $n) {
     $error($get($f, $orderPath($g($n), '/finance')), 404, 'CONFIRMARE_NOT_FOUND', "no finance detail of order {$n} without a task (whatever its date)");
 }
@@ -689,7 +697,7 @@ $error($get($f, '/orders/' . rawurlencode($g(64))), 404, 'ORDER_NOT_FOUND', 'no 
 $error($task($who['fout'], $r64), 404, 'FINANCE_REQUEST_NOT_FOUND', 'another employee\'s task: not found');
 $error($task($who['fsup'], $r64), 404, 'FINANCE_REQUEST_NOT_FOUND', 'an approver has no reach of a task that is not assigned to them');
 $t64 = $ok($task($f, $r64), 'legacy task');
-$noOrderData($t64, 'legacy task');
+$noOrderData($t64, 'legacy task', true);
 $check($t64['live']['available'] === true && $t64['live']['ledger'] === 'manual' && $t64['live']['recordEnabled'] === false && $t64['allowed']['verify'] === true && $t64['allowed']['notReceived'] === true,
     'the legacy task reads the shop now (minimized), nothing is recorded in the shop for it, the employee can decide');
 $shopBefore = count(array_filter($th->requests, static fn (array $r): bool => str_ends_with($r['route'], '/finance-action')));
@@ -1002,6 +1010,70 @@ $check($paid['request']['state'] === 'verified' && $th->financeNumbers($oB)['sta
     '2.82.0: she verifies the payment alone after her own NU; the order is cleared; the NU stays recorded');
 $check((int) $one('SELECT COUNT(*) FROM finance_verification_request_events e JOIN finance_verification_requests r ON r.request_uuid = e.request_uuid WHERE r.order_uuid = ? AND e.actor_employee_uuid = ?', [$orderB, $uuids['rop']]) === $operatorEventsBefore,
     '2.82.0: no operator request or second financial approval was needed');
+
+// API 2.85.0 (Finance Smart Search V1): the customer's name with each task and the read-only candidate search. Synthetic
+// names only. A search writes nothing: no task, event, finance action, amount row or shop call.
+$orderA = (string) $one('SELECT order_uuid FROM finance_verification_requests WHERE request_uuid = ?', [$pa]);
+$globalA = (string) $one('SELECT global_order_id FROM operational_orders WHERE order_uuid = ?', [$orderA]);
+$pdo->prepare("UPDATE operational_orders SET workflow_cohort = 'confirmare' WHERE order_uuid = ? AND workflow_cohort IS NULL")->execute([$orderA]);
+$pdo->prepare('UPDATE operational_orders SET document_context = ? WHERE order_uuid = ?')->execute([json_encode(['name' => 'Mariana Tăbăraș', 'company' => null, 'addressLines' => ['Strada Test 1'], 'phoneMasked' => '07** *** 123'], JSON_UNESCAPED_UNICODE), $orderB]);
+$pdo->prepare('UPDATE operational_orders SET document_context = ? WHERE order_uuid = ?')->execute([json_encode(['name' => 'Ali Demir', 'company' => 'Demir Textile SRL', 'addressLines' => ['Strada Test 2'], 'phoneMasked' => null], JSON_UNESCAPED_UNICODE), $orderA]);
+$pdo->prepare('INSERT INTO finance_task_amounts (request_uuid, currency, required_amount, remaining_amount, verified_amount, percentage, read_at, updated_at, order_total, received_amount, cod_remaining)
+    VALUES (?, \'RON\', 600.00, 600.00, 0.00, 30, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6), 2000.00, 0.00, 2000.00)
+    ON DUPLICATE KEY UPDATE required_amount = 600.00, remaining_amount = 600.00, verified_amount = 0.00, order_total = 2000.00, received_amount = 0.00, cod_remaining = 2000.00, read_at = UTC_TIMESTAMP(6)')->execute([$pa]);
+$writes = static fn (): string => json_encode(array_map(static fn (string $t): int => (int) $one("SELECT COUNT(*) FROM {$t}"), ['finance_verification_requests', 'finance_verification_request_events', 'order_finance_actions', 'order_finance_reads', 'finance_task_amounts']))
+    . (string) $one('SELECT MAX(updated_at) FROM finance_verification_requests') . (string) $one('SELECT MAX(updated_at) FROM finance_task_amounts');
+$before = $writes();
+$calls = $transport->posts;
+$search = static function (array $criteria, array $who = []) use ($call, $f, $kernelSingle, $pdo): array {
+    $pdo->exec('DELETE FROM api_rate_limit_buckets');
+    return $call($who === [] ? $f : $who, 'POST', '/confirmare/finance/search', $criteria, null, $kernelSingle);
+};
+$byName = $ok($search(['names' => 'tabaras,mariana']), '2.85.0 search by name');
+$hitB = array_column($byName['items'], null, 'globalOrderId')[$globalB] ?? null;
+$check(is_array($hitB) && $hitB['customer'] === ['name' => 'Mariana Tăbăraș', 'company' => null] && $hitB['paid'] === true && $hitB['task']['open'] === false,
+    '2.85.0: the folded name "tabaras mariana" finds Tăbăraș (accent-insensitive), with her name, the latest task and the verified payment');
+$encoded = json_encode($byName, JSON_UNESCAPED_UNICODE);
+$check(!str_contains($encoded, 'Strada Test') && !str_contains($encoded, 'addressLines') && !str_contains($encoded, '07**'), '2.85.0: the search answers the name and company only, never the address or the telephone');
+$typo = $ok($search(['names' => 'tabaraz']), '2.85.0 search with a typing error');
+$check(in_array($globalB, array_column($typo['items'], 'globalOrderId'), true), '2.85.0: a typing error still reaches the pool (first and last three letters), Staff measures the similarity');
+$byCompany = $ok($search(['names' => 'textile']), '2.85.0 search by company');
+$check(in_array($globalA, array_column($byCompany['items'], 'globalOrderId'), true), '2.85.0: the company name is searched too');
+$near = $ok($search(['amounts' => '61000', 'tolerance' => '1000']), '2.85.0 search by amount');
+$hitA = array_column($near['items'], null, 'globalOrderId')[$globalA] ?? null;
+$check(is_array($hitA) && $hitA['money']['advance'] === '600.00' && $hitA['money']['total'] === '2000.00' && $hitA['money']['remaining'] === '600.00', '2.85.0: 610 RON within ±10 RON finds the 600.00 advance, with its amounts as strings');
+$exactOnly = $ok($search(['amounts' => '61000', 'tolerance' => '0']), '2.85.0 exact amount');
+$check(!in_array($globalA, array_column($exactOnly['items'], 'globalOrderId'), true), '2.85.0: an exact amount search leaves the 600.00 advance out');
+$total = $ok($search(['amounts' => '200000', 'tolerance' => '0']), '2.85.0 total');
+$check(in_array($globalA, array_column($total['items'], 'globalOrderId'), true), '2.85.0: the order total is matched too (a customer paying it all by transfer)');
+$combined = $ok($search(['names' => 'emil,demir', 'amounts' => '61000', 'tolerance' => '1000']), '2.85.0 name and amount');
+$check(($combined['items'][0]['globalOrderId'] ?? null) === $globalA, '2.85.0: an order matching a name and an amount comes first in the pool');
+$byNumber = $ok($search(['orders' => $numberB]), '2.85.0 search by order number');
+$check(count($byNumber['items']) === 1 && $byNumber['items'][0]['globalOrderId'] === $globalB && $byNumber['items'][0]['task']['mine'] === true, '2.85.0: the exact order number, with her task');
+$pfA = (string) $one('SELECT TRIM(LEADING \'0\' FROM proforma_number) FROM finance_verification_requests WHERE request_uuid = ?', [$pa]);
+if ($pfA !== '') {
+    $byPf = $ok($search(['proformas' => $pfA]), '2.85.0 search by proforma');
+    $check(in_array($globalA, array_column($byPf['items'], 'globalOrderId'), true), '2.85.0: the proforma number (without leading zeros) finds its order');
+}
+$empty = $ok($search(['names' => 'ab']), '2.85.0 two letters');
+$check($empty['items'] === [], '2.85.0: two letters never search every order of a shop');
+$error($search(['names' => 'DROP TABLE']), 422, 'VALIDATION_FAILED', '2.85.0: only folded words are accepted');
+$error($search(['amounts' => '1.5']), 422, 'VALIDATION_FAILED', '2.85.0: amounts are whole bani');
+$error($search(['amounts' => '100', 'tolerance' => '9999999']), 422, 'VALIDATION_FAILED', '2.85.0: the tolerance is at most 1000 RON');
+$error($search(['orders' => implode(',', range(1, 11))]), 422, 'VALIDATION_FAILED', '2.85.0: at most ten order numbers');
+$error($search(['names' => 'demir'], $who['rop']), 403, 'FINANCE_SCOPE_DENIED', '2.85.0: an operator has no finance search');
+$error($search(['names' => 'demir', 'customer' => 'x']), 400, 'INVALID_REQUEST', '2.85.0: unknown criteria are refused');
+$error($get($f, '/confirmare/finance/search?names=demir', $kernelSingle), 405, 'METHOD_NOT_ALLOWED', '2.85.0: never a GET (no name in a URL or an access log)');
+$error(T::call($kernelSingle, 'POST', '/confirmare/finance/search', ['names' => 'demir'], ['origin' => T::ORIGIN], $f['cookie']), 403, 'CSRF_INVALID', '2.85.0: the search needs the session CSRF token');
+$other = $ok($search(['names' => 'tabaras', 'source' => 'not-her-shop']), '2.85.0 another shop');
+$check($other['items'] === [], '2.85.0: a shop outside her finance scope answers nothing');
+$check($writes() === $before && $transport->posts === $calls, '2.85.0: searching wrote nothing and called no shop');
+$boxNames = $ok($inbox($f, $kernelSingle), '2.85.0 inbox with names');
+$itemA = array_column($boxNames['items'], null, 'id')[$pa] ?? null;
+$check(is_array($itemA) && $itemA['customer'] === ['name' => 'Ali Demir', 'company' => 'Demir Textile SRL'] && $itemA['money']['total'] === '2000.00' && $itemA['money']['cod'] === '2000.00',
+    '2.85.0: each inbox task carries the customer name and the amounts of its last read');
+$taskB = $ok($task($f, $newTask, $kernelSingle), '2.85.0 task with name');
+$check(($taskB['request']['customer']['name'] ?? null) === 'Mariana Tăbăraș', '2.85.0: the payment check shows the customer name');
 
 // Leave the shared disposable database as the next suites expect it: no Confirmare, finance, request or invoice state.
 foreach (['finance_task_amounts', 'finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
